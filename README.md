@@ -15,7 +15,7 @@ Question → Intent (LLM) → Match (deterministic) → Execute existing | Gener
 ## Requirements
 
 - Python 3.11 or 3.12 (Windows, macOS or Linux). Nothing else: all dependencies are pip wheels.
-- An OpenAI API key (the app uses `gpt-4o-mini`; a restricted key with a spend limit is fine).
+- An OpenAI API key (the app uses `gpt-4o-mini`; a restricted key with a spend limit is fine). Update it in .env file after renaming it
 
 ## Install and run
 
