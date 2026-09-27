@@ -1,125 +1,181 @@
-"""SDK implementation. Imports only agrimon.contracts, NumPy and rasterio."""
+"""Platform SDK used by the fixed template. Imports only agrimon.contracts, NumPy and rasterio.
+
+Division of labour:
+  capability  -> compute(bands, params): the analytical raster, optional region masks, optional metrics
+                 interpret(evidence):   summary, findings and next steps from the platform's evidence
+  platform    -> data access, aggregation into the matrix, matrix statistics, zones, class summaries,
+                 validation, provenance and the ToolResult itself.
+"""
 
 from __future__ import annotations
 
+import math
 import re
 import warnings
 from collections import deque
 from datetime import datetime, timezone
-from typing import Any, Sequence
+from typing import Any, Mapping, Optional, Sequence
 
 import numpy as np
 
 from agrimon.contracts import (
-    ColorClass,
+    Classification,
+    ClassSummary,
     Context,
-    Finding,
-    Grid,
+    GridSize,
+    Interpretation,
     Message,
     Metric,
-    NextStep,
     Provenance,
     ToolResult,
     Zone,
 )
 
-PLACEHOLDER = re.compile(r"\{(metric|zone|class)\.([A-Za-z0-9_\-]+?)(?:\.([a-z_]+))?\}")
-ZONE_FIELDS = {"share_pct", "mean_value", "cell_count", "area_m2", "label"}
+NAME = re.compile(r"^[a-z][a-z0-9_]{1,39}$")
+MAX_ZONES_PER_MASK = 3
 
 
 def now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
 
-def fmt(x: float) -> str:
-    """Formats a number the same way everywhere, so the harness can trace it."""
+def fmt(x: float, digits: int = 3) -> str:
+    """Formats a number compactly; the harness traces numbers with rounding tolerance."""
     x = float(x)
     if x.is_integer():
         return str(int(x))
-    return f"{x:.3f}".rstrip("0").rstrip(".")
+    return f"{x:.{digits}f}".rstrip("0").rstrip(".")
 
 
-# --------------------------------------------------------------------------- 1. bands
+# --------------------------------------------------------------------------- data access
 
 
 def load_bands(context: Context, names: Sequence[str]) -> tuple[dict[str, np.ndarray], np.ndarray]:
-    """Returns the named bands scaled to 0-1 and a boolean nodata mask (True = nodata)."""
+    """Returns the named bands of the selected asset scaled to 0-1, and a nodata mask (True = nodata)."""
     import rasterio
     from rasterio.errors import NotGeoreferencedWarning
 
     refs = {b.name: b for b in context.bands}
     missing = [n for n in names if n not in refs]
     if missing:
-        raise ValueError(f"scene {context.scene_id} has no band(s): {', '.join(missing)}")
+        raise ValueError(f"asset {context.asset_id} has no band(s): {', '.join(missing)}")
     arrays: dict[str, np.ndarray] = {}
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", NotGeoreferencedWarning)
-        with rasterio.open(context.scene_path) as ds:
-            nodata = np.ones((ds.height, ds.width), dtype=bool) if context.nodata is not None else np.zeros(
-                (ds.height, ds.width), dtype=bool
-            )
+        with rasterio.open(context.asset_path) as ds:
+            shape = (ds.height, ds.width)
+            nodata = np.ones(shape, dtype=bool) if context.nodata is not None else np.zeros(shape, dtype=bool)
             for name in names:
                 raw = ds.read(refs[name].index).astype("float64")
                 if context.nodata is not None:
                     nodata &= raw == context.nodata
                 arrays[name] = raw * refs[name].scale
+    for arr in arrays.values():
+        arr.setflags(write=False)  # the analysis reads its inputs; it never edits them
     return arrays, nodata
 
 
-# --------------------------------------------------------------------------- 2. grid
+# --------------------------------------------------------------------------- capability output
 
 
-def to_grid(values: np.ndarray, nodata: np.ndarray, rows: int, cols: int) -> dict[str, Any]:
-    """Per-cell mean, minimum, maximum and valid-pixel count."""
-    values = np.asarray(values, dtype="float64")
+def analysis_output(out: Any, shape: tuple[int, int]) -> dict[str, Any]:
+    """Validates what compute() returned: an array, or {"values", optional "zones", optional "metrics"}."""
+    if not isinstance(out, Mapping):
+        out = {"values": out}
+    unknown = set(out) - {"values", "zones", "metrics"}
+    if unknown:
+        raise ValueError(f"compute() returned unknown keys: {sorted(unknown)}")
+    values = np.asarray(out.get("values"), dtype="float64")
+    if values.shape != shape:
+        raise ValueError(f"compute() values must have the asset's shape {shape}, got {values.shape}")
+    values = np.where(np.isfinite(values), values, np.nan)
+
+    zones: Optional[dict[str, np.ndarray]] = None
+    if out.get("zones") is not None:
+        if not isinstance(out["zones"], Mapping):
+            raise ValueError("compute() zones must be a dict of {name: boolean mask}")
+        zones = {}
+        for name, mask in out["zones"].items():
+            if not NAME.match(str(name)):
+                raise ValueError(f"zone name '{name}' must be snake_case")
+            m = np.asarray(mask)
+            if m.shape != shape:
+                raise ValueError(f"zone mask '{name}' must have the asset's shape {shape}")
+            zones[str(name)] = m.astype(bool)
+
+    metrics: list[dict] = []
+    for name, spec in (out.get("metrics") or {}).items():
+        if not NAME.match(str(name)):
+            raise ValueError(f"metric name '{name}' must be snake_case")
+        if isinstance(spec, Mapping):
+            value, unit, desc = spec.get("value"), str(spec.get("unit", "")), str(spec.get("description", ""))
+        else:
+            value, unit, desc = spec, "", ""
+        value = float(value)
+        if not math.isfinite(value):
+            raise ValueError(f"metric '{name}' is not a finite number")
+        metrics.append({"name": str(name), "value": round(value, 4), "unit": unit, "description": desc,
+                        "source": "capability"})
+    return {"values": values, "zones": zones, "metrics": metrics}
+
+
+# --------------------------------------------------------------------------- matrix
+
+
+def _edges(n: int, parts: int) -> np.ndarray:
+    return np.linspace(0, n, parts + 1).round().astype(int)
+
+
+def _reduce(v: np.ndarray, how: str) -> float:
+    if how == "mean":
+        return float(v.mean())
+    if how == "median":
+        return float(np.median(v))
+    if how == "min":
+        return float(v.min())
+    if how == "max":
+        return float(v.max())
+    vals, counts = np.unique(v, return_counts=True)  # mode; ties -> smallest value
+    return float(vals[np.argmax(counts)])
+
+
+def to_matrix(values: np.ndarray, nodata: np.ndarray, rows: int, cols: int, aggregation: str) -> dict[str, Any]:
+    """Aggregates the per-pixel analytical raster into a rows x cols matrix (NaN = no valid pixels)."""
     valid = (~nodata) & np.isfinite(values)
     h, w = values.shape
-    r_edges = np.linspace(0, h, rows + 1).round().astype(int)
-    c_edges = np.linspace(0, w, cols + 1).round().astype(int)
-    mean = np.full((rows, cols), np.nan)
-    vmin = np.full((rows, cols), np.nan)
-    vmax = np.full((rows, cols), np.nan)
+    re_, ce = _edges(h, rows), _edges(w, cols)
+    matrix = np.full((rows, cols), np.nan)
     count = np.zeros((rows, cols), dtype=int)
     for i in range(rows):
         for j in range(cols):
-            block = values[r_edges[i]: r_edges[i + 1], c_edges[j]: c_edges[j + 1]]
-            ok = valid[r_edges[i]: r_edges[i + 1], c_edges[j]: c_edges[j + 1]]
+            ok = valid[re_[i]: re_[i + 1], ce[j]: ce[j + 1]]
             if ok.any():
-                v = block[ok]
-                mean[i, j], vmin[i, j], vmax[i, j], count[i, j] = v.mean(), v.min(), v.max(), ok.sum()
-    return {
-        "mean": mean,
-        "min": vmin,
-        "max": vmax,
-        "count": count,
-        "rows": rows,
-        "cols": cols,
-        "cell_height_px": h / rows,
-        "cell_width_px": w / cols,
-    }
+                matrix[i, j] = _reduce(values[re_[i]: re_[i + 1], ce[j]: ce[j + 1]][ok], aggregation)
+                count[i, j] = int(ok.sum())
+    return {"matrix": matrix, "count": count, "rows": rows, "cols": cols,
+            "cell_height_px": h / rows, "cell_width_px": w / cols, "valid": valid}
 
 
-# --------------------------------------------------------------------------- 3. classes
-
-
-def _classes(classes: Sequence[dict]) -> list[dict]:
-    return sorted(classes, key=lambda c: c["min"])
-
-
-def classify(grid_mean: np.ndarray, classes: Sequence[dict]) -> np.ndarray:
-    """Class id per cell from the declared breaks; -1 marks nodata cells."""
-    ordered = _classes(classes)
-    out = np.full(grid_mean.shape, -1, dtype=int)
-    finite = np.isfinite(grid_mean)
-    for i, c in enumerate(ordered):
-        sel = finite & (out == -1)
-        if i < len(ordered) - 1:  # last class takes everything left, including its max
-            sel &= grid_mean < c["max"]
-        out[sel] = c["id"]
+def matrix_metrics(grid: dict, unit: str) -> list[dict]:
+    """Platform statistics of the returned matrix. Recomputable by anyone from the matrix itself."""
+    m = grid["matrix"]
+    ok = np.isfinite(m)
+    out = []
+    if ok.any():
+        v = m[ok]
+        for name, val, desc in (
+            ("matrix_mean", v.mean(), "Mean of the matrix cells"),
+            ("matrix_min", v.min(), "Lowest matrix cell"),
+            ("matrix_max", v.max(), "Highest matrix cell"),
+            ("matrix_std", v.std(), "Standard deviation of the matrix cells"),
+        ):
+            out.append({"name": name, "value": round(float(val), 4), "unit": unit, "description": desc, "source": "platform"})
+    out.append({"name": "valid_cells", "value": int(ok.sum()), "unit": "cells", "description": "Matrix cells with data", "source": "platform"})
+    out.append({"name": "nodata_cells", "value": int((~ok).sum()), "unit": "cells", "description": "Matrix cells without data", "source": "platform"})
     return out
 
 
-# --------------------------------------------------------------------------- 4. zones
+# --------------------------------------------------------------------------- zones
 
 
 def _components(mask: np.ndarray) -> list[list[tuple[int, int]]]:
@@ -144,216 +200,134 @@ def _components(mask: np.ndarray) -> list[list[tuple[int, int]]]:
     return comps
 
 
-def find_zones(
-    class_grid: np.ndarray, grid: dict, classes: Sequence[dict], context: Context, max_zones: int = 3
-) -> list[dict]:
-    """Connected cells (4-connectivity) of the highest and lowest classes present.
+def zones_from_masks(masks: Optional[dict[str, np.ndarray]], grid: dict, context: Context) -> Optional[list[dict]]:
+    """Turns the capability's region masks into zones: connected matrix cells where most valid pixels are in the mask.
 
-    Zone ids are high-1..high-3 (largest first) and low-1..low-3. Area is given only
-    when the scene has a known resolution.
+    Returns None when the capability defined no regions (zones are optional).
     """
-    by_id = {c["id"]: c for c in classes}
-    present = sorted({int(v) for v in np.unique(class_grid) if v >= 0}, key=lambda cid: by_id[cid]["min"])
-    if not present:
-        return []
-    total_valid = int((class_grid >= 0).sum())
+    if masks is None:
+        return None
+    m, valid = grid["matrix"], grid["valid"]
+    rows, cols = grid["rows"], grid["cols"]
+    h, w = valid.shape
+    re_, ce = _edges(h, rows), _edges(w, cols)
+    total_valid = int(np.isfinite(m).sum())
     cell_area = None
     if context.resolution_m:
-        cell_area = grid["cell_height_px"] * grid["cell_width_px"] * context.resolution_m**2
+        cell_area = grid["cell_height_px"] * grid["cell_width_px"] * context.resolution_m ** 2
     zones: list[dict] = []
-    for prefix, cid in (("high", present[-1]), ("low", present[0])):
-        for k, comp in enumerate(_components(class_grid == cid)[:max_zones], start=1):
+    for name, mask in masks.items():
+        cellmask = np.zeros((rows, cols), dtype=bool)
+        for i in range(rows):
+            for j in range(cols):
+                ok = valid[re_[i]: re_[i + 1], ce[j]: ce[j + 1]]
+                if ok.any() and np.isfinite(m[i, j]):
+                    cellmask[i, j] = mask[re_[i]: re_[i + 1], ce[j]: ce[j + 1]][ok].mean() >= 0.5
+        for k, comp in enumerate(_components(cellmask)[:MAX_ZONES_PER_MASK], start=1):
             rr = [r for r, _ in comp]
             cc = [c for _, c in comp]
             zones.append({
-                "id": f"{prefix}-{k}",
-                "class_id": cid,
-                "label": f"{by_id[cid]['label']} region",
+                "id": f"{name}-{k}",
+                "name": name,
                 "cell_count": len(comp),
-                "share_pct": round(100.0 * len(comp) / total_valid, 2),
+                "share_pct": round(100.0 * len(comp) / total_valid, 2) if total_valid else 0.0,
+                "mean_value": round(float(np.mean([m[r, c] for r, c in comp])), 4),
                 "area_m2": round(cell_area * len(comp), 1) if cell_area else None,
-                "mean_value": round(float(np.nanmean([grid["mean"][r, c] for r, c in comp])), 3),
-                "row_min": min(rr),
-                "row_max": max(rr),
-                "col_min": min(cc),
-                "col_max": max(cc),
+                "row_min": min(rr), "row_max": max(rr), "col_min": min(cc), "col_max": max(cc),
+                "cells": [(int(r), int(c)) for r, c in comp],
             })
     return zones
 
 
-# --------------------------------------------------------------------------- 5. metrics
+# --------------------------------------------------------------------------- classification
 
 
-def standard_metrics(
-    values: np.ndarray, nodata: np.ndarray, grid: dict, class_grid: np.ndarray, classes: Sequence[dict], unit: str
-) -> list[dict]:
-    """Mean, minimum and maximum; share of cells per class; nodata count."""
-    values = np.asarray(values, dtype="float64")
-    valid = (~nodata) & np.isfinite(values)
-    metrics: list[dict] = []
-    if valid.any():
-        v = values[valid]
-        metrics += [
-            {"name": "mean_value", "value": round(float(v.mean()), 3), "unit": unit, "description": "Mean over valid pixels"},
-            {"name": "min_value", "value": round(float(v.min()), 3), "unit": unit, "description": "Minimum over valid pixels"},
-            {"name": "max_value", "value": round(float(v.max()), 3), "unit": unit, "description": "Maximum over valid pixels"},
-        ]
-    valid_cells = int((class_grid >= 0).sum())
-    metrics += [
-        {"name": "valid_cells", "value": valid_cells, "unit": "cells", "description": "Grid cells with data"},
-        {"name": "nodata_cells", "value": int((class_grid < 0).sum()), "unit": "cells", "description": "Grid cells without data"},
-    ]
-    for c in _classes(classes):
-        share = 100.0 * int((class_grid == c["id"]).sum()) / valid_cells if valid_cells else 0.0
-        metrics.append({
-            "name": f"class_{c['id']}_share_pct",
-            "value": round(share, 2),
-            "unit": "percent",
-            "description": f"Share of valid cells in class '{c['label']}'",
-        })
-    return metrics
+def class_summary(grid: dict, classes: Optional[Sequence[Mapping]]) -> Optional[dict]:
+    """For classified rasters: counts and shares per declared class. None for continuous analyses."""
+    if classes is None:
+        return None
+    m = grid["matrix"]
+    ok = np.isfinite(m)
+    ids = {int(c["id"]) for c in classes}
+    present = {float(v) for v in np.unique(m[ok])}
+    stray = sorted(v for v in present if not (v.is_integer() and int(v) in ids))
+    if stray:
+        raise ValueError(f"classified matrix contains values that are not declared class ids: {stray[:5]}")
+    total = int(ok.sum())
+    out = []
+    for c in classes:
+        n = int((m[ok] == int(c["id"])).sum())
+        out.append({"id": int(c["id"]), "label": c["label"], "description": c.get("description", ""),
+                    "cell_count": n, "share_pct": round(100.0 * n / total, 2) if total else 0.0})
+    return {"classes": out}
 
 
-# --------------------------------------------------------------------------- 6. findings
+# --------------------------------------------------------------------------- interpretation
 
 
-def render_findings(
-    rules: Sequence[dict], metrics: Sequence[dict], zones: Sequence[dict], classes: Sequence[dict]
-) -> list[dict]:
-    """Fills finding placeholders from computed values and attaches evidence references.
-
-    A rule is dropped when it references a missing metric or zone, or cites no evidence at all.
-    """
-    m = {x["name"]: x for x in metrics}
-    z = {x["id"]: x for x in zones}
-    c = {str(x["id"]): x for x in classes}
-    findings = []
-    for rule in rules:
-        evidence: list[str] = []
-        missing = False
-
-        def sub(match: re.Match) -> str:
-            nonlocal missing
-            kind, ref, field = match.group(1), match.group(2), match.group(3)
-            if kind == "metric":
-                if ref not in m:
-                    missing = True
-                    return ""
-                evidence.append(ref)
-                return fmt(m[ref]["value"])
-            if kind == "zone":
-                if ref not in z or (field and field not in ZONE_FIELDS):
-                    missing = True
-                    return ""
-                evidence.append(ref)
-                val = z[ref].get(field or "label")
-                if val is None:
-                    missing = True
-                    return ""
-                return val if isinstance(val, str) else fmt(val)
-            if ref not in c:
-                missing = True
-                return ""
-            return c[ref]["label"]
-
-        text = PLACEHOLDER.sub(sub, rule["template"])
-        if missing or not evidence:
-            continue
-        findings.append({"id": rule["id"], "statement": text, "evidence": sorted(set(evidence))})
-    return findings
+def evidence(context: Context, grid: dict, metrics: Sequence[dict], zones: Optional[Sequence[dict]],
+             classification: Optional[dict], value_label: str, value_unit: str) -> dict:
+    """The plain-Python evidence handed to interpret(). Everything a finding may cite is here."""
+    return {
+        "asset": {"id": context.asset_id, "label": context.asset_label, "date": context.asset_date},
+        "question": context.question,
+        "grid_size": {"rows": grid["rows"], "cols": grid["cols"]},
+        "value_label": value_label,
+        "value_unit": value_unit,
+        "metrics": {m["name"]: m["value"] for m in metrics},
+        "metric_units": {m["name"]: m["unit"] for m in metrics},
+        "zones": [{k: v for k, v in z.items() if k != "cells"} for z in (zones or [])],
+        "zones_defined": zones is not None,
+        "classes": list(classification["classes"]) if classification else [],
+    }
 
 
-# --------------------------------------------------------------------------- 7. summary
+def interpretation(obj: Any) -> Interpretation:
+    if not isinstance(obj, Mapping):
+        raise ValueError("interpret() must return a dict with summary, findings and next_steps")
+    return Interpretation.model_validate(dict(obj))
 
 
-def summarize(
-    context: Context, value_label: str, metrics: Sequence[dict], zones: Sequence[dict], classes: Sequence[dict]
-) -> str:
-    """A short summary composed only from computed values."""
-    m = {x["name"]: x["value"] for x in metrics}
-    ordered = _classes(classes)
-    parts = [f"{context.scene_label} ({context.scene_date}):"]
-    if "mean_value" in m:
-        parts.append(
-            f"{value_label} averages {fmt(m['mean_value'])} (range {fmt(m['min_value'])} to {fmt(m['max_value'])})"
-            f" across {fmt(m['valid_cells'])} valid cells of a {context.grid_rows}x{context.grid_cols} grid."
-        )
-    present = [c for c in ordered if m.get("class_%s_share_pct" % c["id"], 0) > 0]
-    if present:
-        hi, lo = present[-1], present[0]
-        hi_share = fmt(m["class_%s_share_pct" % hi["id"]])
-        lo_share = fmt(m["class_%s_share_pct" % lo["id"]])
-        if hi is lo:
-            parts.append(f"All valid cells fall in the '{hi['label']}' class ({hi_share}%).")
-        else:
-            parts.append(
-                f"The highest class present, '{hi['label']}', covers {hi_share}% of cells;"
-                f" the lowest, '{lo['label']}', covers {lo_share}%."
-            )
-    return " ".join(parts)
+# --------------------------------------------------------------------------- result
 
 
-# --------------------------------------------------------------------------- 8. result
-
-
-def _nan_to_none(arr: np.ndarray, digits: int = 4) -> list[list[float | None]]:
-    return [[None if not np.isfinite(v) else round(float(v), digits) for v in row] for row in arr]
-
-
-def build_result(
-    context: Context,
-    description: str,
-    value_label: str,
-    metrics: Sequence[dict],
-    grid: dict,
-    class_grid: np.ndarray,
-    classes: Sequence[dict],
-    zones: Sequence[dict],
-    summary: str,
-    findings: Sequence[dict],
-    next_steps: Sequence[dict],
-    started_at: str,
-) -> ToolResult:
-    """Assembles and validates the ToolResult. Next steps survive only if their finding does."""
-    finding_ids = {f["id"] for f in findings}
+def build_result(context: Context, meta: Mapping, grid: dict, metrics: Sequence[dict], zones: Optional[Sequence[dict]],
+                 classification: Optional[dict], interp: Interpretation, started_at: str) -> ToolResult:
+    m = grid["matrix"]
     cell_size = None
     if context.resolution_m:
         cell_size = round(context.resolution_m * (grid["cell_width_px"] + grid["cell_height_px"]) / 2, 2)
-    warnings_: list[Message] = []
-    if not findings:
-        warnings_.append(Message(code="no_findings", message="No finding rule could be grounded in computed values"))
+    warns: list[Message] = []
+    if zones is not None and not zones:
+        warns.append(Message(code="no_zones", message="The analysis defined regions, but none covered a matrix cell"))
     return ToolResult(
         status="success",
-        description=description,
+        layer_name=meta["layer_name"],
+        description=meta["description"],
+        analysis_type=meta["analysis_type"],
+        asset_id=context.asset_id,
         metrics=[Metric(**x) for x in metrics],
-        grid=Grid(
-            rows=grid["rows"],
-            cols=grid["cols"],
-            cell_width_px=round(grid["cell_width_px"], 3),
-            cell_height_px=round(grid["cell_height_px"], 3),
-            cell_size_m=cell_size,
-            value_label=value_label,
-            class_ids=[[int(v) for v in row] for row in class_grid],
-            values=_nan_to_none(grid["mean"]),
-            minimum=_nan_to_none(grid["min"]),
-            maximum=_nan_to_none(grid["max"]),
-        ),
-        color_map=[ColorClass(**c) for c in _classes(classes)],
-        zones=[Zone(**z) for z in zones],
-        summary=summary,
-        findings=[Finding(**f) for f in findings],
-        next_steps=[NextStep(**s) for s in next_steps if s["follows_from"] in finding_ids],
+        matrix=[[None if not np.isfinite(v) else round(float(v), 5) for v in row] for row in m],
+        grid_size=GridSize(rows=grid["rows"], cols=grid["cols"], cell_width_px=round(grid["cell_width_px"], 3),
+                           cell_height_px=round(grid["cell_height_px"], 3), cell_size_m=cell_size),
+        color_map=meta["color_map"],
+        zones=[Zone(**z) for z in zones] if zones is not None else None,
+        classification=Classification(classes=[ClassSummary(**c) for c in classification["classes"]])
+        if classification else None,
+        summary=interp.summary,
+        findings=interp.findings,
+        next_steps=interp.next_steps,
         provenance=Provenance(
             capability_id=context.capability_id,
             capability_version=context.capability_version,
             content_hash=context.content_hash,
             template_version=context.template_version,
-            scene_id=context.scene_id,
-            asset_file=context.scene_path.replace("\\", "/").split("/")[-1],
+            asset_id=context.asset_id,
+            asset_file=context.asset_path.replace("\\", "/").split("/")[-1],
             parameters=context.parameters,
             config_version=context.config_version,
             started_at=started_at,
             finished_at=now(),
         ),
-        warnings=warnings_,
+        warnings=warns,
     )

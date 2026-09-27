@@ -1,0 +1,19 @@
+{
+  "name": "Green-to-red band ratio",
+  "description": "Ratio of green to red reflectance per pixel; values above 1 mean green exceeds red.",
+  "analysis_type": "band_ratio",
+  "layer_name": "Green / red ratio",
+  "method": "ratio = G / R on 0-1 scaled bands; undefined where R is zero",
+  "citation": "",
+  "required_bands": [
+    "red",
+    "green"
+  ],
+  "value_label": "Green / red",
+  "value_unit": "ratio",
+  "aggregation": "median",
+  "color_map": "purples",
+  "classification": null,
+  "compute_source": "def compute(bands, params):\n    red = bands[\"red\"]\n    return np.where(red > 0, bands[\"green\"] / np.where(red > 0, red, 1.0), np.nan)",
+  "interpret_source": "def interpret(evidence):\n    m = evidence[\"metrics\"]\n    asset = evidence[\"asset\"]\n    summary = (f\"{asset['label']}: the green-to-red ratio has a mean of {m['matrix_mean']:.3f} per cell, \"\n               f\"from {m['matrix_min']:.3f} to {m['matrix_max']:.3f}.\")\n    findings = [{\"id\": \"F1\", \"statement\": f\"The median-aggregated green/red ratio spans {m['matrix_min']:.3f} to \"\n                                           f\"{m['matrix_max']:.3f} (standard deviation {m['matrix_std']:.3f}).\",\n                 \"evidence\": [\"matrix_min\", \"matrix_max\", \"matrix_std\"]}]\n    steps = [{\"type\": \"human_inspection\",\n              \"description\": \"Inspect cells with the highest ratio in the source image to see which surfaces they correspond to.\",\n              \"follows_from\": \"F1\"}]\n    return {\"summary\": summary, \"findings\": findings, \"next_steps\": steps}"
+}

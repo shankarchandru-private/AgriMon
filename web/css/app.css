@@ -131,3 +131,5 @@ pre.json { max-height: 320px; overflow: auto; background: var(--soft); padding: 
 .swatches { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; }
 .swatches span { display: inline-flex; gap: 5px; align-items: center; }
 .swatches i { width: 12px; height: 12px; border-radius: 3px; display: inline-block; border: 1px solid rgba(0,0,0,.15); }
+.legend .gradient { display: inline-flex; align-items: center; gap: 6px; }
+.legend .gradient .bar { width: 160px; height: 12px; border-radius: 3px; border: 1px solid rgba(0,0,0,.15); }

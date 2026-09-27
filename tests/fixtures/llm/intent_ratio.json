@@ -1,0 +1,10 @@
+{
+  "analysis_key": "green_red_ratio",
+  "is_new_key": true,
+  "description": "Per-pixel ratio of green to red.",
+  "required_bands": [
+    "red",
+    "green"
+  ],
+  "assumptions": []
+}

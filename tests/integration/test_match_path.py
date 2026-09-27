@@ -37,7 +37,10 @@ def test_brightness_question_end_to_end(tmp_path):
     assert rec["match"]["rule"] == "rule 2: key match"
     ans = rec["answer"]
     assert ans["source"] == "existing" and ans["capability_id"] == "rgb_overview"
-    assert ans["tool_result"]["grid"]["rows"] == 48 and ans["evaluation"]["verdict"] == "pass"
+    tr = ans["tool_result"]
+    assert tr["grid_size"]["rows"] == 48 and len(tr["matrix"]) == 48 and tr["asset_id"] == "eros_reservoir_farmland"
+    assert tr["color_map"] == "ylorrd" and tr["classification"] is None and ans["evaluation"]["verdict"] == "pass"
+    assert ans["visualization"]["observed_min"] < ans["visualization"]["observed_max"]
     run = client.get(f"/api/runs/{ans['run_id']}").json()
     assert run["summary"] == ans["tool_result"]["summary"]
 
@@ -64,3 +67,20 @@ def test_no_key_fails_cleanly(tmp_path):
     svc = AgriMonService(settings, llm=None, use_default_llm=False)
     rec = svc.run_sync("brightness", "eros_forest_valley")
     assert rec.state == "failed" and "OPENAI_API_KEY" in rec.failure.reason
+
+
+def test_tampered_committed_capability_is_not_run(tmp_path):
+    import os
+    import stat
+
+    root = make_project(tmp_path)
+    cap = root / "capabilities" / "rgb_overview" / "1.0.0" / "capability.py"
+    os.chmod(cap, stat.S_IWUSR | stat.S_IRUSR)
+    cap.write_bytes(cap.read_bytes().replace(b"0.2126", b"0.5000"))
+    settings = load_settings(root, read_env=False)
+    from agrimon.orchestrator.service import AgriMonService
+
+    svc = AgriMonService(settings, llm=FakeLLM(intent=[fixture_json("intent_brightness.json")]))
+    rec = svc.run_sync("brightness overview", "eros_forest_valley")
+    assert rec.state == "failed" and "integrity" in rec.failure.reason
+    assert not list(settings.runs_dir.glob("*/toolresult.json"))  # never executed

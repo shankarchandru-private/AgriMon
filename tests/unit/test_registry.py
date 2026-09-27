@@ -1,10 +1,13 @@
-"""F4 and P8 units: registry load, commit, duplicates, verification and orphans."""
+"""Registry load, commit, duplicates, integrity, verification and orphans."""
+
+import os
+import stat
 
 import pytest
 
 from agrimon.config import load_settings
 from agrimon.contracts import EvaluationReport
-from agrimon.evolution.candidate import content_hash, make_candidate
+from agrimon.evolution.candidate import make_candidate, persist_source
 from agrimon.evolution.templates.seed_rgb_overview import SEED, SEED_ANALYSIS_KEY, SEED_ID
 from agrimon.registry import DuplicateCapability, RegistryStore
 
@@ -14,31 +17,43 @@ from tests.conftest import make_project
 def _stage(tmp_path, cap_id=SEED_ID, key=SEED_ANALYSIS_KEY):
     source, manifest = make_candidate(SEED, cap_id, key, "seed")
     d = tmp_path / f"cand-{cap_id}"
-    d.mkdir()
-    (d / "capability.py").write_text(source, encoding="utf-8")
+    digest = persist_source(d / "capability.py", source)
     report = EvaluationReport(
         report_id="t", subject="candidate", capability_id=cap_id, capability_version="1.0.0",
-        content_hash=content_hash(source), harness_version="t", config_version="t", checks=[], categories=[],
+        content_hash=digest, harness_version="t", config_version="t", checks=[], categories=[],
         blocking_passed=0, blocking_total=0, warnings_raised=0, overall_score=1.0, verdict="pass",
     )
     return d, manifest, report
 
 
+def _store(tmp_path):
+    return RegistryStore(load_settings(make_project(tmp_path, seed=False), read_env=False))
+
+
 def test_commit_and_list(tmp_path):
-    root = make_project(tmp_path, seed=False)
-    store = RegistryStore(load_settings(root, read_env=False))
+    store = _store(tmp_path)
     assert store.load().capabilities == []
     d, manifest, report = _stage(tmp_path)
     entry = store.commit(d, manifest, report, "a1")
     reg = store.load()
     assert reg.registry_version == 1 and [e.id for e in reg.capabilities] == [SEED_ID]
+    assert entry.contract == "toolresult/2" and store.integrity_ok(entry)
     assert store.verify() == [] and store.find_orphans() == []
-    assert store.capability_file(entry).read_text() == (d / "capability.py").read_text()
+    assert not os.stat(store.capability_file(entry)).st_mode & stat.S_IWUSR  # write-once
+
+
+def test_report_hash_must_match_persisted_bytes(tmp_path):
+    store = _store(tmp_path)
+    d, manifest, report = _stage(tmp_path)
+    (d / "capability.py").write_bytes((d / "capability.py").read_bytes() + b"\n# edited after evaluation\n")
+    before = store.fingerprint()
+    with pytest.raises(Exception, match="content hash"):
+        store.commit(d, manifest, report, "a1")
+    assert store.fingerprint() == before
 
 
 def test_duplicate_rejected_and_state_unchanged(tmp_path):
-    root = make_project(tmp_path, seed=False)
-    store = RegistryStore(load_settings(root, read_env=False))
+    store = _store(tmp_path)
     d, manifest, report = _stage(tmp_path)
     store.commit(d, manifest, report, "a1")
     before = store.fingerprint()
@@ -48,10 +63,18 @@ def test_duplicate_rejected_and_state_unchanged(tmp_path):
     assert store.fingerprint() == before
 
 
+def test_tampered_committed_file_fails_integrity(tmp_path):
+    store = _store(tmp_path)
+    d, manifest, report = _stage(tmp_path)
+    entry = store.commit(d, manifest, report, "a1")
+    f = store.capability_file(entry)
+    os.chmod(f, stat.S_IWUSR | stat.S_IRUSR)
+    f.write_bytes(f.read_bytes().replace(b"0.2126", b"0.3000"))
+    assert not store.integrity_ok(entry) and store.verify()
+
+
 def test_pending_folder_is_orphan(tmp_path):
-    root = make_project(tmp_path, seed=False)
-    store = RegistryStore(load_settings(root, read_env=False))
+    store = _store(tmp_path)
     (store.dir / ".pending-x").mkdir(parents=True)
     (store.dir / "ghost" / "1.0.0").mkdir(parents=True)
-    names = sorted(p.name for p in store.find_orphans())
-    assert names == [".pending-x", "1.0.0"]
+    assert sorted(p.name for p in store.find_orphans()) == [".pending-x", "1.0.0"]

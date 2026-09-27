@@ -13,11 +13,11 @@ database, container, queue or frontend framework.
 | Orchestrator | `agrimon/orchestrator` | Request lifecycle, startup recovery, read models |
 | Intent resolver | `agrimon/intent` | LLM question → structured Intent; proposes an analysis key |
 | Matcher | `agrimon/matching` | Deterministic four-rule match over a pinned registry snapshot |
-| Answer composer | `agrimon/answers` | Answer = ToolResult + which capability produced it + evaluation summary |
+| Answer composer | `agrimon/answers` | Answer = ToolResult + which capability produced it + evaluation summary + platform-derived visualization stats |
 | Evolution engine | `agrimon/evolution` | Generate → Admit → Stage and execute → Evaluate → Commit or Quarantine |
-| Capability template | `agrimon/evolution/templates` | Fixed header and footer; three LLM slots; the seed |
-| Evaluation harness | `agrimon/harness` | 17 checks, probe rasters, EvaluationReport; the commit gate |
-| Capability runtime | `agrimon/runtime` | One subprocess per run, configurable timeout, always returns a ToolResult |
+| Capability template | `agrimon/evolution/templates` | Fixed header and footer; slot 1 (`compute`, `interpret`) and slot 2 (literals); the seed |
+| Evaluation harness | `agrimon/harness` | 21 checks (18 blocking), probe and variant rasters, EvaluationReport; the commit gate |
+| Capability runtime | `agrimon/runtime` | One subprocess per run, configurable timeout, runtime guardrail hook, no API key in its environment; always returns a ToolResult |
 | Registry | `agrimon/registry` | Read, snapshot, verify, fingerprint, atomic commit |
 | Catalog | `agrimon/catalog` | `assets/catalog.json` loading and source validation |
 | Contracts | `agrimon/contracts` | Pydantic models for every JSON record |
@@ -58,11 +58,14 @@ database, container, queue or frontend framework.
 3. Atomic commit: copy to `capabilities/.pending-<attempt>`, rename to `<id>/<version>`, then replace
    `registry.json` atomically. The replace is the commit point. A failed replace moves the copied
    folder back out to quarantine.
-4. Out-of-process execution with a timeout; the runtime always returns a ToolResult.
+4. Out-of-process execution with a timeout and a guardrail hook; the runtime always returns a ToolResult.
 5. Per-request isolation: each request pins a registry snapshot; one evolution at a time.
 6. Trusted evaluators: the harness and seed are hand-written; the generator never sees the harness.
 7. Startup recovery: stale index temp files are removed, orphan folders and interrupted attempts are
    quarantined, and every indexed capability is verified against its content hash.
+8. Provenance from persisted bytes: the SHA-256 of `capability.py` as written to disk flows through
+   Context, ToolResult and EvaluationReport to the commit, which re-hashes the copied file; the match
+   path re-hashes before every run and refuses a mismatch.
 
 `tests/failure/test_invariant.py` proves each failure path leaves the fingerprint of `capabilities/`
 unchanged and the next request succeeding.

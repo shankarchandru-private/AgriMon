@@ -3,7 +3,7 @@
 A small, complete prototype of a **self-evolving geospatial analytics system**. Ask an open-ended
 question about a true-color image. If a trusted capability already answers it, AgriMon runs that
 capability. If not, it generates a new Python capability from a fixed template, validates and
-evaluates it with a 17-check harness, commits it automatically when every blocking check passes,
+evaluates it with a 21-check harness, commits it automatically when every blocking check passes,
 and reuses it for later questions. A failed attempt is quarantined and can never damage committed
 capabilities or stop the next request.
 
@@ -48,17 +48,30 @@ python -m agrimon
 
 Open **http://127.0.0.1:8000**.
 
+## Upgrading from the first build
+
+The capability contract changed (ToolResult v2: a free-form analytical matrix instead of fixed
+classes and value ranges). Capabilities committed by the earlier build are kept but no longer matched.
+After replacing the code, run once:
+
+```bash
+python scripts/reset_demo.py
+```
+
+It clears `capabilities/`, `workspace/` and `var/` and reinstalls the v2 seed. Your `.env` is untouched.
+
 ## Try it
 
 1. Pick a scene in the left panel.
 2. Ask **"Give me a brightness overview"**. This matches the seed capability `rgb_overview`: the
-   stepper skips Validate / Evaluate / Commit, and the 48×48 grid, findings and next steps appear.
+   stepper skips Validate / Evaluate / Commit, and the 48×48 brightness matrix, zones, findings and
+   next steps appear.
 3. Ask **"Where does vegetation appear?"**. No capability matches, so AgriMon generates one
    (typically an Excess Green RGB vegetation proxy), runs it in a staged subprocess, evaluates it,
    commits it and shows the answer. The new capability appears on the left marked **New**; click it
-   to see its formula, citation, classes, evaluation and the question that created it.
+   to see its method, citation, color map, evaluation and the question that created it.
 4. Ask the vegetation question again, or on the other scene: it is now matched, not regenerated.
-5. Open **Evaluation harness** (left panel) for all 17 checks per capability and per quarantined attempt.
+5. Open **Evaluation harness** (left panel) for all 21 checks per capability and per quarantined attempt.
 
 Model output varies: a generated candidate can fail a check. It is then quarantined, and the
 generator retries up to two more times with the failure as feedback. Failed attempts appear on the
@@ -71,13 +84,18 @@ pip install -r requirements-dev.txt
 python -m pytest -q
 ```
 
-53 tests, no API key needed (the LLM is stubbed with canned responses in `tests/fixtures/llm/`):
+104 tests, no API key needed (the LLM is stubbed with canned responses in `tests/fixtures/llm/`):
 
-- `tests/unit`: contracts, SDK and template, registry, runtime, matcher, admission, boundaries, OpenAI client
+- `tests/unit`: contracts, SDK and template, registry, runtime guardrails, matcher, admission, boundaries,
+  OpenAI client, and the harness (continuous analyses without bounds or classes, optional zones,
+  negative and >1 values, input dependence, metric consistency, invalid ToolResult and color map,
+  missing data, prescriptions, grounding, repeatability, persisted-byte provenance incl. CRLF)
 - `tests/integration`: the match path end to end through the HTTP API
-- `tests/evolution`: the create path, retry after a rejected candidate, reuse, quarantine listing
-- `tests/failure`: nine tests of the core invariant (generation, admission, crash, hang, malformed
-  result, evaluation, persistence before and at the commit point, concurrent duplicates). Each asserts
+- `tests/evolution`: the create path for three analysis shapes (continuous with zones, continuous
+  without zones, classification), retry after a rejected candidate, reuse, quarantine listing
+- `tests/failure`: eleven tests of the core invariant (generation, admission, crash, hang, malformed
+  result, guardrail violation, missing data, evaluation, persistence before and at the commit point,
+  concurrent duplicates). Each asserts
   committed state is byte-identical afterwards and the next request succeeds.
 
 ## Developer scripts
@@ -104,8 +122,10 @@ python -m pytest -q
 
 ## Known limits (deliberately deferred)
 
-- **Not a security sandbox.** Capability code runs in a separate process with a timeout, which
-  protects availability; containers, network blocking and memory limits are production work.
+- **Not a security sandbox.** Capability code is screened by admission rules and runs in a separate
+  process with a timeout, no API key and a guardrail hook that blocks file writes, network and
+  process launches. That is defence in depth for a prototype; containers, OS-level network blocking
+  and memory limits are production work.
 - **Scenes are not georeferenced.** The two bundled USGS EROS JPEGs have no CRS or resolution, so
   zones report cell counts and shares, not square metres.
 - **RGB only.** Vegetation answers are RGB proxies (such as Excess Green), never NDVI; multispectral

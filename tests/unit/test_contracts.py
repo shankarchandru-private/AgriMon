@@ -1,64 +1,85 @@
-"""F1: contracts accept valid JSON and reject malformed JSON."""
+"""ToolResult v2 is strict about schema and types, and open about the analysis itself."""
+
+import math
 
 import pytest
 from pydantic import ValidationError
 
-from agrimon.contracts import CapabilityManifest, IntentDraft, ToolResult
 from agrimon.config import load_settings
+from agrimon.contracts import GenerationOutput, IntentDraft, ToolResult
+
+from tests.conftest import fixture_json
 
 
-def _grid(rows=4, cols=4):
-    return {
-        "rows": rows, "cols": cols, "cell_width_px": 2.0, "cell_height_px": 2.0,
-        "value_label": "brightness", "class_ids": [[0] * cols for _ in range(rows)],
-        "values": [[0.5] * cols for _ in range(rows)], "minimum": [[0.4] * cols for _ in range(rows)],
-        "maximum": [[0.6] * cols for _ in range(rows)],
+def _result(**over):
+    n = 8
+    base = {
+        "status": "success", "layer_name": "Layer", "description": "d", "analysis_type": "band_ratio",
+        "asset_id": "a1", "color_map": "purples",
+        "matrix": [[1.5 if (r + c) % 2 else -0.25 for c in range(n)] for r in range(n)],
+        "grid_size": {"rows": n, "cols": n, "cell_width_px": 2.0, "cell_height_px": 2.0},
+        "metrics": [{"name": "matrix_mean", "value": 0.625, "unit": "ratio", "source": "platform"}],
+        "summary": "Asset a1 summary.",
+        "findings": [{"id": "F1", "statement": "Mean is 0.625.", "evidence": ["matrix_mean"]}],
+        "next_steps": [{"type": "human_inspection", "description": "Inspect it closely.", "follows_from": "F1"}],
+        "provenance": {"capability_id": "c", "capability_version": "1.0.0", "content_hash": "h", "template_version": "2",
+                       "asset_id": "a1", "asset_file": "a.jpg", "config_version": "x", "started_at": "t", "finished_at": "t"},
     }
+    base.update(over)
+    return base
 
 
-def _prov():
-    return {"capability_id": "rgb_overview", "capability_version": "1.0.0", "content_hash": "abc",
-            "template_version": "1", "scene_id": "s", "asset_file": "a.jpg", "config_version": "x",
-            "started_at": "t", "finished_at": "t"}
+def test_continuous_result_without_bounds_classes_or_zones():
+    tr = ToolResult.model_validate(_result())  # negative and >1 values, no zones, no classification
+    assert tr.zones is None and tr.classification is None and tr.contract_version == "toolresult/2"
 
 
-def test_valid_toolresult():
-    tr = ToolResult.model_validate({"status": "success", "description": "d", "grid": _grid(), "provenance": _prov()})
-    assert tr.contract_version == "toolresult/1"
+def test_nulls_allowed_but_not_nan():
+    m = _result()["matrix"]
+    m[0][0] = None
+    ToolResult.model_validate(_result(matrix=m))
+    m[0][1] = math.nan
+    with pytest.raises(ValidationError):
+        ToolResult.model_validate(_result(matrix=m))
 
 
-def test_failed_toolresult_requires_errors():
+@pytest.mark.parametrize("change", [
+    {"color_map": "rainbow"},                                  # not an allowed color map
+    {"matrix": [[1.0] * 7 for _ in range(8)]},                 # shape does not match grid_size
+    {"asset_id": ""},                                          # asset required
+    {"layer_name": ""},                                        # layer required
+    {"findings": []},                                          # findings required
+    {"extra_field": 1},                                        # unknown field
+    {"next_steps": [{"type": "prescription", "description": "Apply it now.", "follows_from": "F1"}]},
+    {"next_steps": [{"type": "human_inspection", "description": "Look again.", "follows_from": "F9"}]},
+    {"metrics": [{"name": "m", "value": math.inf, "source": "capability"}]},
+])
+def test_invalid_toolresults_rejected(change):
+    with pytest.raises(ValidationError):
+        ToolResult.model_validate(_result(**change))
+
+
+def test_failed_result_needs_errors():
     with pytest.raises(ValidationError):
         ToolResult.model_validate({"status": "failed", "description": "d"})
     assert ToolResult.failure("x", "boom").status == "failed"
 
 
-def test_toolresult_rejects_unknown_field_and_bad_grid():
+def test_generation_output_rules():
+    good = fixture_json("generation_ratio.json")
+    GenerationOutput.model_validate(good)  # no classes, no bounds
     with pytest.raises(ValidationError):
-        ToolResult.model_validate({"status": "success", "description": "d", "grid": _grid(), "provenance": _prov(), "extra": 1})
-    bad = _grid()
-    bad["values"] = [[0.5] * 3 for _ in range(4)]
-    with pytest.raises(ValidationError):
-        ToolResult.model_validate({"status": "success", "description": "d", "grid": bad, "provenance": _prov()})
+        GenerationOutput.model_validate({**good, "color_map": "jet"})
+    classes = fixture_json("generation_classes.json")
+    GenerationOutput.model_validate(classes)
+    with pytest.raises(ValidationError):  # classification requires mode aggregation
+        GenerationOutput.model_validate({**classes, "aggregation": "mean"})
 
 
 def test_intent_key_format():
     IntentDraft(analysis_key="vegetation_proxy_rgb", is_new_key=True, description="green areas", required_bands=["red"])
     with pytest.raises(ValidationError):
         IntentDraft(analysis_key="Vegetation Proxy", is_new_key=True, description="green areas", required_bands=["red"])
-
-
-def test_manifest_requires_rules_and_valid_colors():
-    base = dict(id="abc_key", version="1.0.0", template_version="1", analysis_key="abc_key", name="n", description="d",
-                required_bands=["red"], value_label="v", value_unit="index", value_min=0, value_max=1,
-                classes=[{"id": 0, "label": "a", "color": "#000000", "min": 0, "max": 0.5},
-                         {"id": 1, "label": "b", "color": "#ffffff", "min": 0.5, "max": 1}],
-                formula="f", finding_rules=[{"id": "F1", "template": "Mean is {metric.mean_value}."}], origin="seed")
-    CapabilityManifest(**base)
-    with pytest.raises(ValidationError):
-        CapabilityManifest(**{**base, "finding_rules": []})
-    with pytest.raises(ValidationError):
-        CapabilityManifest(**{**base, "classes": [{"id": 0, "label": "a", "color": "red", "min": 0, "max": 1}] * 2})
 
 
 def test_settings_load_and_reject(tmp_path):

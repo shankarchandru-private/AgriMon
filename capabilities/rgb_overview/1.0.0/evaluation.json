@@ -1,12 +1,12 @@
 {
   "report_version": "evaluation/1",
-  "report_id": "363d676e599d",
+  "report_id": "864eb5327a50",
   "subject": "candidate",
   "capability_id": "rgb_overview",
   "capability_version": "1.0.0",
-  "content_hash": "3375f0747a6c2014c97afec2590818e33ab145c70fbaa89a115b78e8db3888f3",
-  "harness_version": "1.0",
-  "config_version": "2475f79b137e",
+  "content_hash": "69a7190ef27d5bc5a16278df50c10b23897ff4bb479cf232a43d2d9817724aeb",
+  "harness_version": "2.0",
+  "config_version": "06869780ff28",
   "checks": [
     {
       "name": "Schema conformance",
@@ -14,18 +14,28 @@
       "blocking": true,
       "passed": true,
       "score": 1.0,
-      "observed": "valid toolresult/1, status=success",
-      "expected": "valid toolresult/1 with status=success",
+      "observed": "valid toolresult/2, status=success",
+      "expected": "a valid ToolResult (Pydantic) with status=success",
       "evidence": ""
     },
     {
-      "name": "Completeness",
+      "name": "Matrix and grid size",
       "category": "Contract",
       "blocking": true,
       "passed": true,
       "score": 1.0,
-      "observed": "all fields present; color map covers the grid",
-      "expected": "metrics, grid, color map, zones, summary, findings",
+      "observed": "48x48 matrix, 2304 valid cells",
+      "expected": "a 48x48 JSON matrix of numbers or nulls",
+      "evidence": ""
+    },
+    {
+      "name": "Asset and color map",
+      "category": "Contract",
+      "blocking": true,
+      "passed": true,
+      "score": 1.0,
+      "observed": "asset eros_forest_valley, color map ylorrd, layer 'Brightness (Rec. 709 luma)'",
+      "expected": "asset_id of the selected asset; color map one of greens, blues, reds, purples, ylorrd",
       "evidence": ""
     },
     {
@@ -34,8 +44,8 @@
       "blocking": true,
       "passed": true,
       "score": 1.0,
-      "observed": "exit=ok, 0.45s",
-      "expected": "exit=ok within 60s",
+      "observed": "exit=ok, 0.88s",
+      "expected": "exit=ok within the 60s timeout",
       "evidence": ""
     },
     {
@@ -44,28 +54,38 @@
       "blocking": true,
       "passed": true,
       "score": 1.0,
-      "observed": "classes equal=True, values equal=True, metrics equal=True",
-      "expected": "identical grid and metrics on a second run",
+      "observed": "matrix identical=True, metrics identical=True, zones identical=True, text identical=True",
+      "expected": "identical matrix, metrics, zones and text on a second run",
       "evidence": ""
     },
     {
-      "name": "Input validity",
+      "name": "Required data available",
       "category": "Data",
       "blocking": true,
       "passed": true,
       "score": 1.0,
-      "observed": "bands ['red', 'green', 'blue'] present; grid and nodata consistent",
-      "expected": "required bands present, declared grid size, nodata accounted for",
+      "observed": "bands ['red', 'green', 'blue'] available in asset eros_forest_valley",
+      "expected": "every required band exists in the selected asset",
       "evidence": ""
     },
     {
-      "name": "Value ranges",
+      "name": "Input dependence",
       "category": "Data",
       "blocking": true,
       "passed": true,
       "score": 1.0,
-      "observed": "all values within [0, 1]; class shares sum to 100.00%",
-      "expected": "values within the declared scale [0, 1]; shares sum to 100%",
+      "observed": "red: responds; green: responds; blue: responds",
+      "expected": "the matrix changes when any declared input band changes (no unused or fabricated inputs)",
+      "evidence": ""
+    },
+    {
+      "name": "Data-derived matrix",
+      "category": "Analytical quality",
+      "blocking": true,
+      "passed": true,
+      "score": 1.0,
+      "observed": "2100 distinct values over 100% of cells; mirrored input -> mirrored matrix (r=1.000)",
+      "expected": "a varied matrix that follows the input's geometry",
       "evidence": ""
     },
     {
@@ -74,18 +94,28 @@
       "blocking": true,
       "passed": true,
       "score": 1.0,
-      "observed": "constant: 1 class(es), 0 nodata cells; masked: 576/576 masked cells are nodata, 1728/1728 unmasked cells have data",
-      "expected": "constant image -> one class; masked quadrant -> nodata cells only there",
+      "observed": "uniform input -> uniform matrix; masked input -> 576/576 masked cells null, 100% of unmasked cells valid",
+      "expected": "uniform input -> uniform matrix; nodata input -> null cells only there",
       "evidence": ""
     },
     {
-      "name": "Class spread",
+      "name": "Metrics consistency",
       "category": "Analytical quality",
-      "blocking": false,
+      "blocking": true,
       "passed": true,
       "score": 1.0,
-      "observed": "largest class covers 86.02% of cells",
-      "expected": "no class above 95%",
+      "observed": "8 metrics; platform statistics match the matrix",
+      "expected": "matrix statistics recompute from the returned matrix; metric names unique and finite",
+      "evidence": ""
+    },
+    {
+      "name": "Zones and classes consistency",
+      "category": "Analytical quality",
+      "blocking": true,
+      "passed": true,
+      "score": 1.0,
+      "observed": "6 zones agree with the matrix",
+      "expected": "zone cells, means and shares and class counts recompute from the matrix",
       "evidence": ""
     },
     {
@@ -94,8 +124,8 @@
       "blocking": true,
       "passed": true,
       "score": 1.0,
-      "observed": "every number appears in metrics or zones",
-      "expected": "numbers in summary and findings come from metrics or zones",
+      "observed": "every number in the summary and findings appears in the returned metrics, zones or classes",
+      "expected": "numerical claims trace to the returned analytical result",
       "evidence": ""
     },
     {
@@ -104,8 +134,8 @@
       "blocking": true,
       "passed": true,
       "score": 1.0,
-      "observed": "3 findings, all cite metrics or zones",
-      "expected": "every finding cites at least one existing metric or zone",
+      "observed": "3 findings, each citing returned metrics, zones or classes",
+      "expected": "every finding cites evidence present in the ToolResult",
       "evidence": ""
     },
     {
@@ -114,18 +144,18 @@
       "blocking": true,
       "passed": true,
       "score": 1.0,
-      "observed": "3 next steps, all follow-up analysis or human inspection",
-      "expected": "next steps are follow-up analysis or human inspection, never prescriptions",
+      "observed": "no prescriptions; 3 next steps, all follow-up analysis or human inspection",
+      "expected": "no agronomic prescriptions; next steps are analysis follow-ups or human inspection",
       "evidence": ""
     },
     {
-      "name": "Formula citation",
+      "name": "Methodology reference",
       "category": "Grounding",
       "blocking": false,
       "passed": true,
       "score": 1.0,
-      "observed": "formula='brightness = 0.2126 R + 0.7152 G + 0.0722 B (bands scaled to 0-1)'; citation='ITU-R Recommendation BT.709-6, luma coefficients (2015)'",
-      "expected": "a formula and a published source",
+      "observed": "method='brightness = 0.2126 R + 0.7152 G + 0.0722 B on 0-1 scaled bands; regions at the 10th and 90th percentiles'; citation='ITU-R Recommendation BT.709-6, luma coefficients (2015)'",
+      "expected": "a citation or methodological reference when the method is not self-evident",
       "evidence": ""
     },
     {
@@ -139,13 +169,13 @@
       "evidence": ""
     },
     {
-      "name": "Readable summary",
+      "name": "Useful result",
       "category": "User value",
       "blocking": false,
       "passed": true,
       "score": 1.0,
-      "observed": "242 chars; names scene=True; names date=True",
-      "expected": "at most 600 chars, naming the scene and its date",
+      "observed": "summary names the asset; 3 findings; 3 next steps; layer 'Brightness (Rec. 709 luma)'",
+      "expected": "a summary of at most 600 chars naming the asset, findings, next steps and a layer",
       "evidence": ""
     },
     {
@@ -154,7 +184,7 @@
       "blocking": true,
       "passed": true,
       "score": 1.0,
-      "observed": "all 7 admission rules passed",
+      "observed": "all 7 admission rules passed (no forbidden operations)",
       "expected": "no admission violations",
       "evidence": ""
     },
@@ -169,13 +199,23 @@
       "evidence": ""
     },
     {
-      "name": "Provenance complete",
+      "name": "Provenance chain",
       "category": "Governance",
       "blocking": true,
       "passed": true,
       "score": 1.0,
-      "observed": "rgb_overview 1.0.0, hash 3375f0747a6c, scene eros_forest_valley",
-      "expected": "capability, version, content hash, scene and parameters recorded",
+      "observed": "file bytes = Context = ToolResult = report: 69a7190ef27d5bc5",
+      "expected": "persisted file SHA-256 carried unchanged through Context, ToolResult and report",
+      "evidence": ""
+    },
+    {
+      "name": "Committed state untouched",
+      "category": "Governance",
+      "blocking": true,
+      "passed": true,
+      "score": 1.0,
+      "observed": "capabilities/ byte-identical before and after all candidate runs",
+      "expected": "evaluating a candidate never modifies committed capabilities or the registry",
       "evidence": ""
     }
   ],
@@ -216,10 +256,10 @@
       "passed": true
     }
   ],
-  "blocking_passed": 13,
-  "blocking_total": 13,
+  "blocking_passed": 18,
+  "blocking_total": 18,
   "warnings_raised": 1,
-  "overall_score": 0.971,
+  "overall_score": 0.976,
   "verdict": "pass",
-  "created_at": "2026-09-27T03:53:32+00:00"
+  "created_at": "2026-09-27T06:57:37+00:00"
 }

@@ -25,7 +25,7 @@ from agrimon.contracts import (
     ToolResult,
 )
 from agrimon.evolution.admission import admit
-from agrimon.evolution.candidate import content_hash, make_candidate
+from agrimon.evolution.candidate import file_hash, make_candidate, persist_source
 from agrimon.evolution.generator import GenerationError, Generator
 from agrimon.evolution.quarantine import move_orphan, quarantine_attempt, write_attempt
 from agrimon.harness import Harness
@@ -68,7 +68,7 @@ class EvolutionEngine:
         if self.llm is None:
             return None
         payload = {"question": question, "analysis": manifest.name, "description": manifest.description,
-                   "summary": tr.summary, "findings": [f.statement for f in tr.findings]}
+                   "layer": tr.layer_name, "summary": tr.summary, "findings": [f.statement for f in tr.findings]}
         raw = self.llm.complete_json("intent", JUDGE_PROMPT, json.dumps(payload))
         return float(raw.get("score", 0)), str(raw.get("reason", ""))[:200]
 
@@ -127,13 +127,14 @@ class EvolutionEngine:
         cand_dir = stage_dir / "candidate"
         cand_dir.mkdir(parents=True, exist_ok=True)
         cap_file = cand_dir / "capability.py"
-        cap_file.write_text(source, encoding="utf-8")
+        # Provenance root: the SHA-256 of the persisted bytes, never of the in-memory string.
+        record.content_hash = persist_source(cap_file, source)
         (cand_dir / "manifest.json").write_text(manifest.model_dump_json(indent=2), encoding="utf-8")
-        record.content_hash = content_hash(source)
+        persisted = cap_file.read_bytes().decode("utf-8")
 
-        # Validate: admission ------------------------------------------------------
+        # Validate: admission (of exactly what was persisted) ---------------------------
         state("admitting")
-        violations = admit(source, manifest, scene, snapshot, self.settings.evolution.max_source_bytes)
+        violations = admit(persisted, manifest, scene, snapshot, self.settings.evolution.max_source_bytes)
         record.admission_violations = violations
         if violations:
             self._fail(outcome, record, stage_dir, "admitting", "; ".join(violations))
@@ -143,8 +144,8 @@ class EvolutionEngine:
         state("executing_staged")
         run_id = f"{record.attempt_id}-run"
         record.run_id = run_id
-        ctx = build_context(self.settings, scene, manifest, record.content_hash, "staged", record.request_id,
-                            run_id, stage_dir / "run")
+        ctx = build_context(self.settings, scene, manifest, file_hash(cap_file), "staged", record.request_id,
+                            run_id, stage_dir / "run", question=intent.question)
         run = self.runtime.run(cap_file, ctx, stage_dir / "run")
         if not run.ok:
             msg = "; ".join(f"{e.code}: {e.message}" for e in run.tool_result.errors) or run.exit_reason
@@ -156,7 +157,7 @@ class EvolutionEngine:
         report = self.harness.evaluate(
             capability_file=cap_file, manifest=manifest, first_run=run, context=ctx, scene=scene, snapshot=snapshot,
             admission_violations=violations, intent=intent, work_dir=stage_dir / "harness", subject="candidate",
-            judge=self._judge,
+            judge=self._judge, committed_fingerprint=self.registry.fingerprint,
         )
         (stage_dir / "evaluation.json").write_text(report.model_dump_json(indent=2), encoding="utf-8")
         record.verdict = report.verdict

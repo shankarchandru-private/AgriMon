@@ -67,7 +67,7 @@ def test_generation_fails(tmp_path):
 
 # 2 ---------------------------------------------------------------------------------------------
 def test_admission_fails(tmp_path):
-    bad = exg(compute_values_source="import os\n" + exg()["compute_values_source"])
+    bad = exg(compute_source="import os\n" + exg()["compute_source"])
     svc = service(tmp_path, [bad])
     before = svc.registry.fingerprint()
     rec = ask(svc)
@@ -79,7 +79,7 @@ def test_admission_fails(tmp_path):
 
 # 3 ---------------------------------------------------------------------------------------------
 def test_execution_crashes(tmp_path):
-    svc = service(tmp_path, [exg(compute_values_source="def compute_values(bands, params):\n    raise ValueError('boom')\n")])
+    svc = service(tmp_path, [exg(compute_source="def compute(bands, params):\n    raise ValueError('boom')\n")])
     before = svc.registry.fingerprint()
     rec = ask(svc)
     assert rec.failure.stage == "executing_staged" and "boom" in rec.failure.reason
@@ -88,7 +88,7 @@ def test_execution_crashes(tmp_path):
 
 # 4 ---------------------------------------------------------------------------------------------
 def test_execution_hangs(tmp_path):
-    hang = exg(compute_values_source="def compute_values(bands, params):\n    while True:\n        pass\n")
+    hang = exg(compute_source="def compute(bands, params):\n    while True:\n        pass\n")
     svc = service(tmp_path, [hang], overrides={**FAST, "runtime": {"timeout_seconds": 2}})
     before = svc.registry.fingerprint()
     rec = ask(svc)
@@ -118,8 +118,9 @@ def test_malformed_toolresult(tmp_path, monkeypatch):
 
 # 6 ---------------------------------------------------------------------------------------------
 def test_evaluation_fails(tmp_path):
-    rules = exg()["finding_rules"] + [{"id": "F4", "template": "About 42% of the field is healthy crop, mean {metric.mean_value}."}]
-    svc = service(tmp_path, [exg(finding_rules=rules)])
+    interp = exg()["interpret_source"].replace("cover {m['green_dominant_pct']:.1f}% of the image.",
+                                               "cover about 42% of the field as healthy crop.")
+    svc = service(tmp_path, [exg(interpret_source=interp)])
     before = svc.registry.fingerprint()
     rec = ask(svc)
     assert rec.failure.stage == "evaluating" and "Numbers traced" in rec.failure.reason
@@ -175,7 +176,7 @@ def test_persistence_fails_at_commit_point(tmp_path, monkeypatch):
 # 9 ---------------------------------------------------------------------------------------------
 def test_concurrent_duplicate_commits(tmp_path):
     from agrimon.contracts import EvaluationReport, GenerationOutput
-    from agrimon.evolution.candidate import content_hash, make_candidate
+    from agrimon.evolution.candidate import make_candidate, persist_source
 
     root = make_project(tmp_path)
     store = RegistryStore(load_settings(root, read_env=False))
@@ -184,11 +185,10 @@ def test_concurrent_duplicate_commits(tmp_path):
     for i in range(2):
         source, manifest = make_candidate(gen, "vegetation_proxy_rgb", "vegetation_proxy_rgb", "generated")
         d = tmp_path / f"cand{i}"
-        d.mkdir()
-        (d / "capability.py").write_text(source)
+        digest = persist_source(d / "capability.py", source)
         report = EvaluationReport(report_id=f"r{i}", subject="candidate", capability_id=manifest.id,
-                                  capability_version="1.0.0", content_hash=content_hash(source), harness_version="t",
-                                  config_version="t", checks=[], categories=[], blocking_passed=13, blocking_total=13,
+                                  capability_version="1.0.0", content_hash=digest, harness_version="t",
+                                  config_version="t", checks=[], categories=[], blocking_passed=18, blocking_total=18,
                                   warnings_raised=0, overall_score=1.0, verdict="pass")
         staged.append((d, manifest, report, f"att{i}"))
     barrier, results = threading.Barrier(2), []
@@ -207,3 +207,27 @@ def test_concurrent_duplicate_commits(tmp_path):
     reg = store.load()
     assert reg.registry_version == 2 and [e.id for e in reg.capabilities].count("vegetation_proxy_rgb") == 1
     assert store.verify() == [] and store.find_orphans() == []
+
+
+# 10 --------------------------------------------------------------------------------------------
+def test_guardrail_blocks_side_effects_past_admission(tmp_path, monkeypatch):
+    """Even if admission missed it, a capability that writes files is stopped by the runtime guard."""
+    import agrimon.evolution.engine as engine
+
+    monkeypatch.setattr(engine, "admit", lambda *a, **k: [])
+    body = exg()["compute_source"].replace('    total = bands["red"]',
+                                           '    open("../../../../capabilities/registry.json", "w").write("{}")\n    total = bands["red"]')
+    svc = service(tmp_path, [exg(compute_source=body)])
+    before = svc.registry.fingerprint()
+    rec = ask(svc)
+    assert rec.failure.stage == "executing_staged" and "guardrail_violation" in rec.failure.reason
+    assert_invariant(svc, before)
+
+
+# 11 --------------------------------------------------------------------------------------------
+def test_missing_required_data(tmp_path):
+    svc = service(tmp_path, [exg(required_bands=["red", "green", "nir"])])
+    before = svc.registry.fingerprint()
+    rec = ask(svc)
+    assert rec.failure.stage == "admitting" and "nir" in rec.failure.reason
+    assert_invariant(svc, before)

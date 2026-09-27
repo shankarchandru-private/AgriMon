@@ -92,5 +92,5 @@ class Runtime:
             return ToolResult.failure("malformed_result", f"result does not match ToolResult v1: {exc}"), "malformed_result"
         if result.status == "failed":
             code = result.errors[0].code if result.errors else "capability_error"
-            return result, code if code in {"malformed_result", "capability_error"} else "capability_error"
+            return result, code if code in {"malformed_result", "capability_error", "guardrail_violation"} else "capability_error"
         return result, "ok"

@@ -1,6 +1,9 @@
-"""The 17-check evaluation harness: 13 blocking checks decide the verdict, 4 raise warnings.
+"""The evaluation harness: the commit gate. Hand-written, trusted, and never shown to the generator.
 
-Hand-written and trusted. Its source, probes and thresholds never appear in a generation prompt.
+It tests analytical behaviour, not just the presence of fields: it re-runs the candidate on the
+same input (reproducibility), on a mirrored copy and on copies with one band inverted (the matrix
+must be derived from, and respond to, the actual input), and on synthetic probes (uniform input,
+masked input). It never imposes universal value ranges or mandatory classes.
 """
 
 from __future__ import annotations
@@ -14,8 +17,10 @@ from typing import Callable, Optional
 import numpy as np
 from pydantic import ValidationError
 
+from agrimon.catalog import scene_path
 from agrimon.config import Settings
 from agrimon.contracts import (
+    COLOR_MAPS,
     CapabilityManifest,
     CategoryScore,
     CheckResult,
@@ -26,19 +31,22 @@ from agrimon.contracts import (
     Scene,
     ToolResult,
 )
-from agrimon.harness.probes import masked_quadrant, probe_scenes
+from agrimon.harness.probes import masked_quadrant, probe_scenes, write_variant
 from agrimon.observability import get_logger
 from agrimon.runtime import RunOutcome, Runtime, build_context
 
 log = get_logger("harness")
 
-HARNESS_VERSION = "1.0"
+HARNESS_VERSION = "2.0"
 CATEGORIES = ["Contract", "Execution", "Data", "Analytical quality", "Grounding", "User value", "Governance"]
+GRID_LIMITS = (32, 96)  # "approximately 48x48 or 64x64"
 NUMBER = re.compile(r"(?<![A-Za-z_\d.])-?\d+(?:\.\d+)?(?![A-Za-z_\d])")
 PRESCRIPTIVE = [
-    re.compile(r"\b(apply|spray|fertili[sz]e|irrigate|treat|replant|re-?seed|harvest|till|plough|plow|drain)\b", re.I),
-    re.compile(r"\b(herbicide|pesticide|fungicide|insecticide|fertili[sz]er)s?\b", re.I),
-    re.compile(r"\b\d+(\.\d+)?\s*(kg|lb|lbs|litres?|liters?|gal|gallons?|mm|inches)\b", re.I),
+    re.compile(r"\b(apply|applying|spray|spraying|fertili[sz]e|fertili[sz]ing|irrigate|irrigating|treat|treating|"
+               r"replant|re-?seed|harvest|till|plough|plow|drain|cull|prune)\b", re.I),
+    re.compile(r"\b(herbicide|pesticide|fungicide|insecticide|fertili[sz]er|nitrogen|manure|lime)s?\b", re.I),
+    re.compile(r"\b\d+(\.\d+)?\s*(kg|lb|lbs|litres?|liters?|gal|gallons?|mm|inches|tons?|t)\s*/\s*(ha|acre|ac)\b", re.I),
+    re.compile(r"\b(you|farmers?|growers?) (should|must|need to)\b", re.I),
 ]
 
 Judge = Callable[[str, CapabilityManifest, ToolResult], Optional[tuple[float, str]]]
@@ -48,12 +56,20 @@ def _c(name, category, blocking, passed, observed="", expected="", evidence="", 
     return CheckResult(
         name=name, category=category, blocking=blocking, passed=bool(passed),
         score=float(score if score is not None else (1.0 if passed else 0.0)),
-        observed=str(observed)[:500], expected=str(expected)[:300], evidence=str(evidence)[:500],
+        observed=str(observed)[:600], expected=str(expected)[:300], evidence=str(evidence)[:500],
     )
 
 
 def _decimals(s: str) -> int:
     return len(s.split(".")[1]) if "." in s else 0
+
+
+def _arr(tr: ToolResult) -> np.ndarray:
+    return np.array([[np.nan if v is None else v for v in row] for row in tr.matrix], dtype=float)
+
+
+def _sha(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 class Harness:
@@ -76,75 +92,78 @@ class Harness:
         work_dir: Path,
         subject: str = "candidate",
         judge: Judge | None = None,
+        committed_fingerprint: Callable[[], str] | None = None,
     ) -> EvaluationReport:
-        source_hash = hashlib.sha256(capability_file.read_bytes()).hexdigest()
+        start_hash = _sha(capability_file)
+        start_fp = committed_fingerprint() if committed_fingerprint else None
         tr = first_run.tool_result
-        has_result = tr.status != "failed" and tr.grid is not None
+        ok = tr.status != "failed" and tr.matrix is not None
+        base = _arr(tr) if ok else None
         checks: list[CheckResult] = []
 
-        # Contract ------------------------------------------------------------
+        # Contract
         checks.append(self._schema(tr))
-        checks.append(self._completeness(tr, has_result))
-        # Execution -----------------------------------------------------------
+        checks.append(self._grid(tr, context, ok))
+        checks.append(self._asset_colormap(tr, context, ok))
+        # Execution
         checks.append(_c("Clean run", "Execution", True, first_run.ok,
                          observed=f"exit={first_run.exit_reason}, {first_run.duration_s:.2f}s",
-                         expected=f"exit=ok within {self.settings.runtime.timeout_seconds:g}s",
-                         evidence="; ".join(e.message for e in tr.errors)))
-        checks.append(self._reproducibility(capability_file, context, tr, has_result, work_dir))
-        # Data ----------------------------------------------------------------
-        checks.append(self._input_validity(manifest, scene, tr, has_result))
-        checks.append(self._value_ranges(manifest, tr, has_result))
-        # Analytical quality --------------------------------------------------
-        checks.append(self._probes(capability_file, manifest, source_hash, has_result, work_dir))
-        checks.append(self._class_spread(tr, has_result))
-        # Grounding -----------------------------------------------------------
-        checks.append(self._numbers_traced(manifest, scene, tr, has_result))
-        checks.append(self._evidence_refs(tr, has_result))
+                         expected=f"exit=ok within the {self.settings.runtime.timeout_seconds:g}s timeout",
+                         evidence="; ".join(f"{e.code}: {e.message}" for e in tr.errors)))
+        checks.append(self._reproducibility(capability_file, context, tr, ok, work_dir))
+        # Data
+        checks.append(self._data_available(manifest, scene, first_run))
+        checks.append(self._input_dependence(capability_file, manifest, scene, context, base, work_dir))
+        # Analytical quality
+        checks.append(self._data_derived(capability_file, scene, context, base, work_dir))
+        checks.append(self._probes(capability_file, manifest, start_hash, ok, work_dir))
+        checks.append(self._metrics_consistent(tr, base))
+        checks.append(self._zones_classes(tr, base))
+        # Grounding
+        checks.append(self._numbers_traced(scene, tr, ok))
+        checks.append(self._evidence_refs(tr, ok))
         checks.append(self._no_prescriptions(tr))
-        checks.append(_c("Formula citation", "Grounding", False,
-                         bool(manifest.formula.strip()) and len(manifest.citation.strip()) >= 10,
-                         observed=f"formula='{manifest.formula}'; citation='{manifest.citation}'",
-                         expected="a formula and a published source"))
-        # User value ----------------------------------------------------------
-        checks.append(self._answers_intent(intent, manifest, tr, has_result, judge))
-        checks.append(self._readable_summary(scene, tr, has_result))
-        # Governance ----------------------------------------------------------
+        has_cite = len(manifest.citation.strip()) >= 10
+        checks.append(_c("Methodology reference", "Grounding", False, has_cite, score=1.0 if has_cite else 0.5,
+                         observed=f"method='{manifest.method}'; citation='{manifest.citation or 'none'}'",
+                         expected="a citation or methodological reference when the method is not self-evident"))
+        # User value
+        checks.append(self._answers_intent(intent, manifest, tr, ok, judge))
+        checks.append(self._useful(scene, tr, ok))
+        # Governance
         checks.append(_c("Admission passed", "Governance", True, not admission_violations,
-                         observed="; ".join(admission_violations) or "all 7 admission rules passed",
+                         observed="; ".join(admission_violations) or "all 7 admission rules passed (no forbidden operations)",
                          expected="no admission violations"))
         checks.append(self._not_duplicate(manifest, snapshot))
-        checks.append(self._provenance(tr, manifest, source_hash, scene, has_result))
-
-        return self._report(checks, manifest, source_hash, subject)
+        checks.append(self._provenance(capability_file, start_hash, context, tr, ok))
+        end_fp = committed_fingerprint() if committed_fingerprint else None
+        checks.append(_c("Committed state untouched", "Governance", True, start_fp == end_fp,
+                         observed="capabilities/ byte-identical before and after all candidate runs" if start_fp == end_fp
+                         else "capabilities/ changed while the candidate was being evaluated",
+                         expected="evaluating a candidate never modifies committed capabilities or the registry"))
+        return self._report(checks, manifest, start_hash, subject)
 
     # ------------------------------------------------------------------ scoring
     def _report(self, checks, manifest, source_hash, subject) -> EvaluationReport:
         cats = []
         for cat in CATEGORIES:
             items = [c for c in checks if c.category == cat]
-            cats.append(CategoryScore(
-                category=cat,
-                score=round(sum(c.score for c in items) / len(items), 3),
-                passed=all(c.passed for c in items if c.blocking),
-            ))
+            cats.append(CategoryScore(category=cat, score=round(sum(c.score for c in items) / len(items), 3),
+                                      passed=all(c.passed for c in items if c.blocking)))
         blocking = [c for c in checks if c.blocking]
-        verdict = "pass" if all(c.passed for c in blocking) else "fail"
         return EvaluationReport(
-            report_id=uuid.uuid4().hex[:12],
-            subject=subject,
-            capability_id=manifest.id,
-            capability_version=manifest.version,
-            content_hash=source_hash,
-            harness_version=HARNESS_VERSION,
-            config_version=self.settings.config_version,
-            checks=checks,
-            categories=cats,
-            blocking_passed=sum(c.passed for c in blocking),
-            blocking_total=len(blocking),
+            report_id=uuid.uuid4().hex[:12], subject=subject, capability_id=manifest.id,
+            capability_version=manifest.version, content_hash=source_hash, harness_version=HARNESS_VERSION,
+            config_version=self.settings.config_version, checks=checks, categories=cats,
+            blocking_passed=sum(c.passed for c in blocking), blocking_total=len(blocking),
             warnings_raised=sum(not c.passed for c in checks if not c.blocking),
             overall_score=round(sum(c.score for c in checks) / len(checks), 3),
-            verdict=verdict,
+            verdict="pass" if all(c.passed for c in blocking) else "fail",
         )
+
+    def _run_variant(self, cap: Path, ctx: Context, scene: Scene, path: Path, name: str, work_dir: Path) -> RunOutcome:
+        vctx = ctx.model_copy(update={"run_id": f"{ctx.run_id}-{name}", "asset_path": str(path)})
+        return self.runtime.run(cap, vctx, work_dir / name)
 
     # ------------------------------------------------------------------ Contract
     @staticmethod
@@ -155,84 +174,134 @@ class Harness:
             obs = f"valid {tr.contract_version}, status={tr.status}"
         except ValidationError as exc:
             ok, obs = False, str(exc).splitlines()[0]
-        return _c("Schema conformance", "Contract", True, ok, observed=obs, expected="valid toolresult/1 with status=success")
+        return _c("Schema conformance", "Contract", True, ok, observed=obs,
+                  expected="a valid ToolResult (Pydantic) with status=success")
 
-    def _completeness(self, tr: ToolResult, has_result: bool) -> CheckResult:
-        if not has_result:
-            return _c("Completeness", "Contract", True, False, observed="no result", expected="all fields present")
-        missing = []
-        if not tr.metrics:
-            missing.append("metrics")
-        if not tr.summary.strip():
-            missing.append("summary")
-        if not tr.findings:
-            missing.append("findings")
-        if not tr.zones:
-            missing.append("zones")
-        classes_in_grid = {v for row in tr.grid.class_ids for v in row if v >= 0}
-        uncovered = classes_in_grid - {c.id for c in tr.color_map}
-        if uncovered:
-            missing.append(f"color_map for classes {sorted(uncovered)}")
-        return _c("Completeness", "Contract", True, not missing,
-                  observed="missing: " + ", ".join(missing) if missing else "all fields present; color map covers the grid",
-                  expected="metrics, grid, color map, zones, summary, findings")
+    def _grid(self, tr: ToolResult, ctx: Context, ok: bool) -> CheckResult:
+        if not ok:
+            return _c("Matrix and grid size", "Contract", True, False, observed="no matrix")
+        g = tr.grid_size
+        lo, hi = GRID_LIMITS
+        problems = []
+        if (g.rows, g.cols) != (ctx.grid_rows, ctx.grid_cols):
+            problems.append(f"grid {g.rows}x{g.cols} differs from the requested {ctx.grid_rows}x{ctx.grid_cols}")
+        if not (lo <= g.rows <= hi and lo <= g.cols <= hi):
+            problems.append(f"grid {g.rows}x{g.cols} outside {lo}-{hi}")
+        valid = sum(v is not None for row in tr.matrix for v in row)
+        if valid == 0:
+            problems.append("matrix has no valid cells")
+        return _c("Matrix and grid size", "Contract", True, not problems,
+                  observed="; ".join(problems) or f"{g.rows}x{g.cols} matrix, {valid} valid cells",
+                  expected=f"a {ctx.grid_rows}x{ctx.grid_cols} JSON matrix of numbers or nulls")
+
+    @staticmethod
+    def _asset_colormap(tr: ToolResult, ctx: Context, ok: bool) -> CheckResult:
+        if not ok:
+            return _c("Asset and color map", "Contract", True, False, observed="no result")
+        problems = []
+        if tr.asset_id != ctx.asset_id:
+            problems.append(f"asset_id '{tr.asset_id}' is not the selected asset '{ctx.asset_id}'")
+        if tr.color_map not in COLOR_MAPS:
+            problems.append(f"color map '{tr.color_map}' not allowed")
+        if not tr.layer_name.strip() or not tr.analysis_type.strip():
+            problems.append("layer_name and analysis_type must be set")
+        return _c("Asset and color map", "Contract", True, not problems,
+                  observed="; ".join(problems) or f"asset {tr.asset_id}, color map {tr.color_map}, layer '{tr.layer_name}'",
+                  expected=f"asset_id of the selected asset; color map one of {', '.join(COLOR_MAPS)}")
 
     # ------------------------------------------------------------------ Execution
-    def _reproducibility(self, cap: Path, ctx: Context, tr: ToolResult, has_result: bool, work_dir: Path) -> CheckResult:
-        if not has_result:
+    def _reproducibility(self, cap, ctx, tr, ok, work_dir) -> CheckResult:
+        if not ok:
             return _c("Reproducibility", "Execution", True, False, observed="no first result to compare")
         again = self.runtime.run(cap, ctx.model_copy(update={"run_id": ctx.run_id + "-repro"}), work_dir / "repro")
         if not again.ok:
             return _c("Reproducibility", "Execution", True, False, observed=f"second run failed: {again.exit_reason}")
-        a, b = tr.grid, again.tool_result.grid
-        same_classes = a.class_ids == b.class_ids
-        same_values = a.values == b.values
-        same_metrics = [(m.name, m.value) for m in tr.metrics] == [(m.name, m.value) for m in again.tool_result.metrics]
-        ok = same_classes and same_values and same_metrics
-        return _c("Reproducibility", "Execution", True, ok,
-                  observed=f"classes equal={same_classes}, values equal={same_values}, metrics equal={same_metrics}",
-                  expected="identical grid and metrics on a second run")
+        b = again.tool_result
+        same = {
+            "matrix": tr.matrix == b.matrix,
+            "metrics": [(m.name, m.value) for m in tr.metrics] == [(m.name, m.value) for m in b.metrics],
+            "zones": [z.model_dump() for z in (tr.zones or [])] == [z.model_dump() for z in (b.zones or [])],
+            "text": (tr.summary, [f.statement for f in tr.findings]) == (b.summary, [f.statement for f in b.findings]),
+        }
+        return _c("Reproducibility", "Execution", True, all(same.values()),
+                  observed=", ".join(f"{k} identical={v}" for k, v in same.items()),
+                  expected="identical matrix, metrics, zones and text on a second run")
 
     # ------------------------------------------------------------------ Data
-    def _input_validity(self, manifest, scene: Scene, tr: ToolResult, has_result: bool) -> CheckResult:
-        problems = [f"band '{b}' not in scene" for b in manifest.required_bands if b not in scene.band_names]
-        if has_result:
-            g = tr.grid
-            if (g.rows, g.cols) != (self.settings.grid.rows, self.settings.grid.cols):
-                problems.append(f"grid {g.rows}x{g.cols} != declared {self.settings.grid.rows}x{self.settings.grid.cols}")
-            m = {x.name: x.value for x in tr.metrics}
-            if m.get("valid_cells", -1) + m.get("nodata_cells", -1) != g.rows * g.cols:
-                problems.append("valid_cells + nodata_cells does not equal the cell count")
-        else:
-            problems.append("no result")
-        return _c("Input validity", "Data", True, not problems,
-                  observed="; ".join(problems) or f"bands {manifest.required_bands} present; grid and nodata consistent",
-                  expected="required bands present, declared grid size, nodata accounted for")
-
     @staticmethod
-    def _value_ranges(manifest: CapabilityManifest, tr: ToolResult, has_result: bool) -> CheckResult:
-        if not has_result:
-            return _c("Value ranges", "Data", True, False, observed="no result")
-        lo, hi, eps = manifest.value_min, manifest.value_max, 1e-6
-        m = {x.name: x.value for x in tr.metrics}
-        out = [f"{k}={m[k]}" for k in ("mean_value", "min_value", "max_value") if k in m and not lo - eps <= m[k] <= hi + eps]
-        cells = [v for row in tr.grid.values for v in row if v is not None]
-        if cells and (min(cells) < lo - eps or max(cells) > hi + eps):
-            out.append(f"grid values span {min(cells):.3f}..{max(cells):.3f}")
-        shares = sum(x.value for x in tr.metrics if x.name.endswith("_share_pct"))
-        if m.get("valid_cells", 0) > 0 and abs(shares - 100) > 0.5:
-            out.append(f"class shares sum to {shares:.2f}%")
-        return _c("Value ranges", "Data", True, not out,
-                  observed="; ".join(out) or f"all values within [{lo:g}, {hi:g}]; class shares sum to {shares:.2f}%",
-                  expected=f"values within the declared scale [{lo:g}, {hi:g}]; shares sum to 100%")
+    def _data_available(manifest, scene: Scene, run: RunOutcome) -> CheckResult:
+        missing = [b for b in manifest.required_bands if b not in scene.band_names]
+        load_error = any("has no band" in e.message for e in run.tool_result.errors)
+        ok = not missing and not load_error
+        return _c("Required data available", "Data", True, ok,
+                  observed=f"missing bands {missing}" if missing else ("band loading failed" if load_error else
+                           f"bands {manifest.required_bands} available in asset {scene.id}"),
+                  expected="every required band exists in the selected asset")
+
+    def _input_dependence(self, cap, manifest, scene: Scene, ctx: Context, base, work_dir) -> CheckResult:
+        """Invert each required band in turn: a capability that truly uses a band must respond to it."""
+        if base is None:
+            return _c("Input dependence", "Data", True, False, observed="no baseline matrix")
+        src = scene_path(self.settings, scene)
+        idx = {b.name: b.index for b in scene.bands}
+        notes, unused = [], []
+        for band in manifest.required_bands:
+            if band not in idx:
+                continue
+            variant = write_variant(src, work_dir / "variants" / f"invert_{band}.tif", "invert", idx[band])
+            out = self._run_variant(cap, ctx, scene, variant, f"invert-{band}", work_dir)
+            if not out.ok:
+                notes.append(f"{band}: run failed ({out.exit_reason})")
+                unused.append(band)
+                continue
+            other = _arr(out.tool_result)
+            both = np.isfinite(base) & np.isfinite(other)
+            changed = (np.isfinite(base) != np.isfinite(other)).any() or (
+                both.any() and np.nanmax(np.abs(base[both] - other[both])) > 1e-6)
+            notes.append(f"{band}: {'responds' if changed else 'no effect'}")
+            if not changed:
+                unused.append(band)
+        return _c("Input dependence", "Data", True, not unused, observed="; ".join(notes),
+                  expected="the matrix changes when any declared input band changes (no unused or fabricated inputs)")
 
     # ------------------------------------------------------------------ Analytical quality
-    def _probes(self, cap: Path, manifest, source_hash: str, has_result: bool, work_dir: Path) -> CheckResult:
-        if not has_result:
-            return _c("Probe behaviour", "Analytical quality", True, False, observed="skipped: no result on the scene")
-        probes = probe_scenes()
-        notes, ok = [], True
-        for name, (scene, path) in probes.items():
+    def _data_derived(self, cap, scene: Scene, ctx: Context, base, work_dir) -> CheckResult:
+        """The matrix varies with the data and follows its geometry: mirroring the input mirrors the matrix."""
+        if base is None:
+            return _c("Data-derived matrix", "Analytical quality", True, False, observed="no matrix")
+        valid = np.isfinite(base)
+        frac = valid.mean()
+        distinct = len(np.unique(base[valid])) if valid.any() else 0
+        problems = []
+        if frac < 0.5:
+            problems.append(f"only {frac:.0%} of cells have data")
+        if distinct < 2:
+            problems.append("matrix is constant on a varied input")
+        corr = None
+        if not problems:
+            flipped = write_variant(scene_path(self.settings, scene), work_dir / "variants" / "flip.tif", "flip")
+            out = self._run_variant(cap, ctx, scene, flipped, "flip", work_dir)
+            if not out.ok:
+                problems.append(f"mirrored-input run failed ({out.exit_reason})")
+            else:
+                mirrored = _arr(out.tool_result)[:, ::-1]
+                both = np.isfinite(base) & np.isfinite(mirrored)
+                if both.sum() > 10 and np.std(base[both]) > 0 and np.std(mirrored[both]) > 0:
+                    corr = float(np.corrcoef(base[both], mirrored[both])[0, 1])
+                    if abs(corr) < 0.9:
+                        problems.append(f"mirroring the input does not mirror the matrix (r={corr:.2f})")
+        observed = f"{distinct} distinct values over {frac:.0%} of cells"
+        if corr is not None:
+            observed += f"; mirrored input -> mirrored matrix (r={corr:.3f})"
+        return _c("Data-derived matrix", "Analytical quality", True, not problems,
+                  observed="; ".join(problems) or observed,
+                  expected="a varied matrix that follows the input's geometry")
+
+    def _probes(self, cap: Path, manifest, source_hash: str, ok: bool, work_dir: Path) -> CheckResult:
+        if not ok:
+            return _c("Probe behaviour", "Analytical quality", True, False, observed="skipped: no result on the asset")
+        notes, good_all = [], True
+        for name, (scene, path) in probe_scenes().items():
             if not path.exists():
                 return _c("Probe behaviour", "Analytical quality", True, False,
                           observed=f"probe raster {path.name} missing; run scripts/prepare_assets.py")
@@ -240,50 +309,114 @@ class Harness:
                                 work_dir / f"probe-{name}", scene_file=path)
             out = self.runtime.run(cap, ctx, work_dir / f"probe-{name}")
             if not out.ok:
-                ok = False
-                notes.append(f"{name}: run failed ({out.exit_reason})")
+                good_all = False
+                notes.append(f"{name}: run failed ({out.exit_reason}: {out.tool_result.errors[0].message[:80]})")
                 continue
-            ids = np.array(out.tool_result.grid.class_ids)
+            m = _arr(out.tool_result)
             if name == "constant":
-                valid = ids[ids >= 0]
-                good = valid.size == ids.size and len(np.unique(valid)) == 1
-                notes.append(f"constant: {len(np.unique(valid))} class(es), {int((ids < 0).sum())} nodata cells")
+                v = m[np.isfinite(m)]
+                good = v.size == 0 or float(np.ptp(v)) <= 1e-6 * (1 + float(np.abs(v).max()))
+                notes.append(f"uniform input -> {'uniform' if good else 'non-uniform'} matrix" + ("" if v.size else " (all nodata)"))
             else:
-                rows, cols = ids.shape
+                rows, cols = m.shape
                 pr, pc = masked_quadrant()
-                r_edges = np.linspace(0, scene.height, rows + 1)
-                c_edges = np.linspace(0, scene.width, cols + 1)
-                inside = np.outer(r_edges[1:] <= pr, c_edges[1:] <= pc)
-                outside = ~np.outer(r_edges[:-1] < pr, c_edges[:-1] < pc)
-                good = bool((ids[inside] == -1).all() and (ids[outside] >= 0).all())
-                notes.append(f"masked: {int((ids[inside] == -1).sum())}/{int(inside.sum())} masked cells are nodata,"
-                             f" {int((ids[outside] >= 0).sum())}/{int(outside.sum())} unmasked cells have data")
-            ok = ok and good
-        return _c("Probe behaviour", "Analytical quality", True, ok, observed="; ".join(notes),
-                  expected="constant image -> one class; masked quadrant -> nodata cells only there")
+                re_, ce = np.linspace(0, scene.height, rows + 1), np.linspace(0, scene.width, cols + 1)
+                inside = np.outer(re_[1:] <= pr, ce[1:] <= pc)
+                outside = ~np.outer(re_[:-1] < pr, ce[:-1] < pc)
+                masked_ok = bool(np.isnan(m[inside]).all())
+                out_valid = float(np.isfinite(m[outside]).mean())
+                good = masked_ok and out_valid >= 0.9
+                notes.append(f"masked input -> {int(np.isnan(m[inside]).sum())}/{int(inside.sum())} masked cells null, "
+                             f"{out_valid:.0%} of unmasked cells valid")
+            good_all = good_all and good
+        return _c("Probe behaviour", "Analytical quality", True, good_all, observed="; ".join(notes),
+                  expected="uniform input -> uniform matrix; nodata input -> null cells only there")
 
-    def _class_spread(self, tr: ToolResult, has_result: bool) -> CheckResult:
-        if not has_result:
-            return _c("Class spread", "Analytical quality", False, False, observed="no result")
-        shares = {x.name: x.value for x in tr.metrics if x.name.endswith("_share_pct")}
-        top = max(shares.values()) if shares else 100.0
-        limit = self.settings.harness.class_spread_warning * 100
-        return _c("Class spread", "Analytical quality", False, top <= limit,
-                  observed=f"largest class covers {top:g}% of cells", expected=f"no class above {limit:g}%",
-                  score=1.0 if top <= limit else max(0.0, 1 - (top - limit) / (100 - limit + 1e-9)))
+    @staticmethod
+    def _metrics_consistent(tr: ToolResult, base) -> CheckResult:
+        if base is None:
+            return _c("Metrics consistency", "Analytical quality", True, False, observed="no matrix")
+        m = {x.name: x.value for x in tr.metrics if x.source == "platform"}
+        v = base[np.isfinite(base)]
+        expected = {"valid_cells": float(v.size), "nodata_cells": float(base.size - v.size)}
+        if v.size:
+            expected.update(matrix_mean=v.mean(), matrix_min=v.min(), matrix_max=v.max(), matrix_std=v.std())
+        bad = [f"{k}={m.get(k)} vs {round(val, 4)}" for k, val in expected.items()
+               if k not in m or abs(m[k] - val) > 1e-3 * (1 + abs(val))]
+        names = [x.name for x in tr.metrics]
+        if len(set(names)) != len(names):
+            bad.append("duplicate metric names")
+        return _c("Metrics consistency", "Analytical quality", True, not bad,
+                  observed="; ".join(bad) or f"{len(tr.metrics)} metrics; platform statistics match the matrix",
+                  expected="matrix statistics recompute from the returned matrix; metric names unique and finite")
+
+    @staticmethod
+    def _zones_classes(tr: ToolResult, base) -> CheckResult:
+        if base is None:
+            return _c("Zones and classes consistency", "Analytical quality", True, False, observed="no matrix")
+        if tr.zones is None and tr.classification is None:
+            return _c("Zones and classes consistency", "Analytical quality", True, True,
+                      observed="not provided (both are optional for this analysis)",
+                      expected="when provided, zones and classes agree with the matrix")
+        problems, notes = [], []
+        valid = int(np.isfinite(base).sum())
+        rows, cols = base.shape
+        if tr.zones is not None:
+            ids = [z.id for z in tr.zones]
+            if len(set(ids)) != len(ids):
+                problems.append("zone ids are not unique")
+            for z in tr.zones:
+                cells = z.cells
+                if len(cells) != z.cell_count or any(not (0 <= r < rows and 0 <= c < cols) for r, c in cells):
+                    problems.append(f"{z.id}: cells do not match cell_count or grid")
+                    continue
+                vals = [base[r, c] for r, c in cells]
+                if any(not np.isfinite(x) for x in vals):
+                    problems.append(f"{z.id}: includes nodata cells")
+                    continue
+                if abs(np.mean(vals) - z.mean_value) > 1e-3 * (1 + abs(z.mean_value)):
+                    problems.append(f"{z.id}: mean_value {z.mean_value} != {np.mean(vals):.4f}")
+                if valid and abs(100 * len(cells) / valid - z.share_pct) > 0.01:
+                    problems.append(f"{z.id}: share_pct inconsistent")
+            notes.append(f"{len(tr.zones)} zones agree with the matrix" if not problems else "")
+        if tr.classification is not None:
+            classes = tr.classification.classes
+            ids = {c.id for c in classes}
+            vals = base[np.isfinite(base)]
+            stray = {float(x) for x in np.unique(vals)} - {float(i) for i in ids}
+            if stray:
+                problems.append(f"matrix has values that are not class ids: {sorted(stray)[:5]}")
+            for c in classes:
+                if int((vals == c.id).sum()) != c.cell_count:
+                    problems.append(f"class {c.id} cell_count does not match the matrix")
+            if valid and abs(sum(c.share_pct for c in classes) - 100) > 0.1:
+                problems.append("class shares do not sum to 100%")
+            notes.append(f"{len(classes)} classes agree with the matrix")
+        return _c("Zones and classes consistency", "Analytical quality", True, not problems,
+                  observed="; ".join(problems) or "; ".join(n for n in notes if n),
+                  expected="zone cells, means and shares and class counts recompute from the matrix")
 
     # ------------------------------------------------------------------ Grounding
     @staticmethod
-    def _numbers_traced(manifest: CapabilityManifest, scene: Scene, tr: ToolResult, has_result: bool) -> CheckResult:
-        if not has_result:
-            return _c("Numbers traced", "Grounding", True, False, observed="no result")
+    def _allowed_numbers(tr: ToolResult) -> list[float]:
         allowed: list[float] = [x.value for x in tr.metrics]
-        for z in tr.zones:
+        for z in tr.zones or []:
             allowed += [z.share_pct, z.mean_value, z.cell_count] + ([z.area_m2] if z.area_m2 is not None else [])
-        allowed += [c.min for c in tr.color_map] + [c.max for c in tr.color_map]
-        allowed += [manifest.value_min, manifest.value_max, tr.grid.rows, tr.grid.cols]
-        strip = sorted({z.id for z in tr.zones} | {x.name for x in tr.metrics} | {scene.label, scene.date_text,
-                        tr.grid.value_label} | {c.label for c in tr.color_map}, key=len, reverse=True)
+        if tr.classification:
+            for c in tr.classification.classes:
+                allowed += [c.id, c.cell_count, c.share_pct]
+        allowed += [tr.grid_size.rows, tr.grid_size.cols]
+        return allowed
+
+    def _numbers_traced(self, scene: Scene, tr: ToolResult, ok: bool) -> CheckResult:
+        if not ok:
+            return _c("Numbers traced", "Grounding", True, False, observed="no result")
+        allowed = self._allowed_numbers(tr)
+        strip = {scene.label, scene.date_text, tr.layer_name, tr.analysis_type, tr.asset_id}
+        strip |= {x.name for x in tr.metrics}
+        strip |= {z.id for z in tr.zones or []} | {z.name for z in tr.zones or []}
+        strip |= {c.label for c in tr.classification.classes} if tr.classification else set()
+        strip = sorted((s for s in strip if s), key=len, reverse=True)
         untraced = []
         for label, text in [("summary", tr.summary)] + [(f.id, f.statement) for f in tr.findings]:
             for token in strip:
@@ -291,42 +424,45 @@ class Harness:
             for mt in NUMBER.finditer(text):
                 s = mt.group()
                 x, d = float(s), _decimals(s)
-                if not any(abs(round(v, d) - x) < 1e-9 or abs(v - x) < 1e-9 for v in allowed):
+                if not any(abs(round(v, d) - x) < 1e-9 or abs(v - x) < 1e-9 or abs(round(abs(v), d) - abs(x)) < 1e-9
+                           for v in allowed):
                     untraced.append(f"{label}: {s}")
         return _c("Numbers traced", "Grounding", True, not untraced,
-                  observed="untraced: " + ", ".join(untraced) if untraced else "every number appears in metrics or zones",
-                  expected="numbers in summary and findings come from metrics or zones")
+                  observed="untraced: " + ", ".join(untraced[:10]) if untraced else
+                  "every number in the summary and findings appears in the returned metrics, zones or classes",
+                  expected="numerical claims trace to the returned analytical result")
 
     @staticmethod
-    def _evidence_refs(tr: ToolResult, has_result: bool) -> CheckResult:
-        if not has_result:
+    def _evidence_refs(tr: ToolResult, ok: bool) -> CheckResult:
+        if not ok:
             return _c("Evidence references", "Grounding", True, False, observed="no result")
-        known = {x.name for x in tr.metrics} | {z.id for z in tr.zones}
-        bad = [f.id for f in tr.findings if not f.evidence or any(e not in known for e in f.evidence)]
+        known = {x.name for x in tr.metrics} | {z.id for z in tr.zones or []}
+        known |= {f"class:{c.id}" for c in tr.classification.classes} if tr.classification else set()
+        bad = [f"{f.id}: {[e for e in f.evidence if e not in known]}" for f in tr.findings
+               if not f.evidence or any(e not in known for e in f.evidence)]
         return _c("Evidence references", "Grounding", True, bool(tr.findings) and not bad,
-                  observed=f"findings without valid evidence: {bad}" if bad else f"{len(tr.findings)} findings, all cite metrics or zones",
-                  expected="every finding cites at least one existing metric or zone")
+                  observed=f"unsupported evidence: {bad}" if bad else f"{len(tr.findings)} findings, each citing returned metrics, zones or classes",
+                  expected="every finding cites evidence present in the ToolResult")
 
     @staticmethod
     def _no_prescriptions(tr: ToolResult) -> CheckResult:
         hits = []
-        texts = [(f"next step {i + 1}", s.description) for i, s in enumerate(tr.next_steps)]
-        texts += [(f.id, f.statement) for f in tr.findings]
+        texts = [("summary", tr.summary)] + [(f.id, f.statement) for f in tr.findings]
+        texts += [(f"next step {i + 1}", s.description) for i, s in enumerate(tr.next_steps)]
         for label, text in texts:
             for pat in PRESCRIPTIVE:
                 m = pat.search(text)
                 if m:
                     hits.append(f"{label}: '{m.group()}'")
-        typed = all(s.type in ("follow_up_analysis", "human_inspection") for s in tr.next_steps)
-        return _c("No unsupported prescriptions", "Grounding", True, typed and not hits,
+        return _c("No unsupported prescriptions", "Grounding", True, not hits,
                   observed="prescriptive wording: " + ", ".join(hits) if hits else
-                  f"{len(tr.next_steps)} next steps, all follow-up analysis or human inspection",
-                  expected="next steps are follow-up analysis or human inspection, never prescriptions")
+                  f"no prescriptions; {len(tr.next_steps)} next steps, all follow-up analysis or human inspection",
+                  expected="no agronomic prescriptions; next steps are analysis follow-ups or human inspection")
 
     # ------------------------------------------------------------------ User value
     @staticmethod
-    def _answers_intent(intent, manifest, tr, has_result, judge) -> CheckResult:
-        if not has_result:
+    def _answers_intent(intent, manifest, tr, ok, judge) -> CheckResult:
+        if not ok:
             return _c("Answers the intent", "User value", False, False, observed="no result")
         if judge is None or intent is None:
             return _c("Answers the intent", "User value", False, False, score=0.5,
@@ -344,14 +480,21 @@ class Harness:
         return _c("Answers the intent", "User value", False, score >= 0.6, score=score,
                   observed=f"judge score {score:.2f}: {reason}", expected="LLM-judged score of at least 0.6")
 
-    def _readable_summary(self, scene: Scene, tr: ToolResult, has_result: bool) -> CheckResult:
-        if not has_result:
-            return _c("Readable summary", "User value", False, False, observed="no result")
+    def _useful(self, scene: Scene, tr: ToolResult, ok: bool) -> CheckResult:
+        if not ok:
+            return _c("Useful result", "User value", False, False, observed="no result")
         limit = self.settings.harness.summary_max_chars
-        ok = len(tr.summary) <= limit and scene.label in tr.summary and scene.date_text in tr.summary
-        return _c("Readable summary", "User value", False, ok,
-                  observed=f"{len(tr.summary)} chars; names scene={scene.label in tr.summary}; names date={scene.date_text in tr.summary}",
-                  expected=f"at most {limit} chars, naming the scene and its date")
+        problems = []
+        if len(tr.summary) > limit:
+            problems.append(f"summary is {len(tr.summary)} chars (limit {limit})")
+        if scene.label not in tr.summary:
+            problems.append("summary does not name the asset")
+        if not tr.next_steps:
+            problems.append("no next steps")
+        return _c("Useful result", "User value", False, not problems,
+                  observed="; ".join(problems) or f"summary names the asset; {len(tr.findings)} findings; "
+                                                  f"{len(tr.next_steps)} next steps; layer '{tr.layer_name}'",
+                  expected=f"a summary of at most {limit} chars naming the asset, findings, next steps and a layer")
 
     # ------------------------------------------------------------------ Governance
     @staticmethod
@@ -363,17 +506,21 @@ class Harness:
                   expected="no committed capability with the same id or analysis key")
 
     @staticmethod
-    def _provenance(tr: ToolResult, manifest, source_hash: str, scene: Scene, has_result: bool) -> CheckResult:
-        if not has_result or tr.provenance is None:
-            return _c("Provenance complete", "Governance", True, False, observed="no provenance")
-        p = tr.provenance
+    def _provenance(cap: Path, start_hash: str, ctx: Context, tr: ToolResult, ok: bool) -> CheckResult:
+        """persisted file bytes -> SHA-256 -> Context -> ToolResult provenance -> EvaluationReport."""
+        end_hash = _sha(cap)
         problems = []
-        if (p.capability_id, p.capability_version) != (manifest.id, manifest.version):
-            problems.append("capability id/version mismatch")
-        if p.content_hash != source_hash:
-            problems.append("content hash does not match the capability file")
-        if p.scene_id != scene.id:
-            problems.append("scene id mismatch")
-        return _c("Provenance complete", "Governance", True, not problems,
-                  observed="; ".join(problems) or f"{p.capability_id} {p.capability_version}, hash {p.content_hash[:12]}, scene {p.scene_id}",
-                  expected="capability, version, content hash, scene and parameters recorded")
+        if end_hash != start_hash:
+            problems.append("the capability file changed during evaluation")
+        if ctx.content_hash != start_hash:
+            problems.append("Context content_hash is not the SHA-256 of the persisted file bytes")
+        if not ok or tr.provenance is None:
+            problems.append("no ToolResult provenance")
+        elif tr.provenance.content_hash != start_hash:
+            problems.append("ToolResult provenance hash is not the SHA-256 of the persisted file bytes")
+        elif (tr.provenance.capability_id, tr.provenance.capability_version, tr.provenance.asset_id) != (
+                ctx.capability_id, ctx.capability_version, ctx.asset_id):
+            problems.append("ToolResult provenance does not match the Context")
+        return _c("Provenance chain", "Governance", True, not problems,
+                  observed="; ".join(problems) or f"file bytes = Context = ToolResult = report: {start_hash[:16]}",
+                  expected="persisted file SHA-256 carried unchanged through Context, ToolResult and report")

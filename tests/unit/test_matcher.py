@@ -4,10 +4,11 @@ from agrimon.contracts import Intent, Registry, RegistryEntry, Scene
 from agrimon.matching import match
 
 
-def _entry(id_, key, version="1.0.0", bands=("red", "green", "blue"), aliases=(), at="2026-01-01T00:00:00+00:00"):
+def _entry(id_, key, version="1.0.0", bands=("red", "green", "blue"), aliases=(), at="2026-01-01T00:00:00+00:00",
+           contract="toolresult/2"):
     return RegistryEntry(id=id_, version=version, analysis_key=key, aliases=list(aliases), name=id_, description="d",
                          required_bands=list(bands), origin="generated", committed_at=at, content_hash="h",
-                         path=f"{id_}/{version}", verdict="pass", overall_score=1.0)
+                         path=f"{id_}/{version}", verdict="pass", overall_score=1.0, contract=contract)
 
 
 SCENE = Scene(id="s", label="S", file="f", sensor="x", source="y", width=10, height=10, dtype="uint8",
@@ -39,3 +40,9 @@ def test_rule3_highest_version_wins():
 def test_rule4_no_match_goes_to_create():
     d = match(_intent("vegetation_proxy_rgb"), SCENE, Registry(capabilities=[_entry("a", "brightness_overview")]))
     assert not d.matched and d.rule.startswith("rule 4")
+
+
+def test_legacy_contract_not_matched():
+    reg = Registry(capabilities=[_entry("old", "brightness_overview", contract="toolresult/1")])
+    d = match(_intent("brightness_overview"), SCENE, reg)
+    assert not d.matched and d.rule == "rule 1: compatibility filter" and "reset_demo" in d.reason

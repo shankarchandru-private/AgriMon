@@ -1,0 +1,13 @@
+{
+  "analysis_key": "surface_classes_rgb",
+  "is_new_key": true,
+  "description": "Classify pixels into water-like, vegetation-like and other surfaces.",
+  "required_bands": [
+    "red",
+    "green",
+    "blue"
+  ],
+  "assumptions": [
+    "Rule-based RGB classification; no near-infrared band is available."
+  ]
+}

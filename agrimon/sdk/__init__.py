@@ -1,30 +1,32 @@
-"""The only application interface available to capabilities.
+"""The platform SDK used by the fixed capability template.
 
-Generated capabilities may import agrimon.sdk, NumPy and math, nothing else.
-All raster access goes through load_bands.
+Generated analytical code (compute and interpret) does not call the SDK: the template's fixed
+execute(context) does. Capabilities may import only agrimon.sdk, NumPy and math.
 """
 
 from agrimon.sdk.core import (  # noqa: F401
+    analysis_output,
     build_result,
-    classify,
-    find_zones,
+    class_summary,
+    evidence,
     fmt,
+    interpretation,
     load_bands,
+    matrix_metrics,
     now,
-    render_findings,
-    standard_metrics,
-    summarize,
-    to_grid,
+    to_matrix,
+    zones_from_masks,
 )
 
 __all__ = [
     "load_bands",
-    "to_grid",
-    "classify",
-    "find_zones",
-    "standard_metrics",
-    "render_findings",
-    "summarize",
+    "analysis_output",
+    "to_matrix",
+    "matrix_metrics",
+    "zones_from_masks",
+    "class_summary",
+    "evidence",
+    "interpretation",
     "build_result",
     "fmt",
     "now",

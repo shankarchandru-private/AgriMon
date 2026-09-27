@@ -25,6 +25,7 @@ from agrimon.contracts import (
     StateChange,
     ToolResult,
 )
+from agrimon.evolution.candidate import file_hash
 from agrimon.evolution.engine import EvolutionEngine
 from agrimon.evolution.quarantine import move_orphan, recover_staging
 from agrimon.harness import Harness
@@ -183,10 +184,15 @@ class AgriMonService:
         run_id = f"{rec.request_id}-run"
         run_dir = self.settings.runs_dir / run_id
         self._state(rec, "executing", f"{entry.id} {entry.version}")
-        ctx = build_context(self.settings, scene, manifest, entry.content_hash, "committed", rec.request_id,
-                            run_id, run_dir)
+        cap_file = self.registry.capability_file(entry)
+        if not self.registry.integrity_ok(entry):  # persisted bytes must still hash to the registered value
+            self._fail(rec, "executing", f"{entry.id} {entry.version} failed its integrity check: the committed file "
+                       "no longer matches its registered content hash, so it was not run", unchanged=True)
+            return
+        ctx = build_context(self.settings, scene, manifest, file_hash(cap_file), "committed", rec.request_id,
+                            run_id, run_dir, question=rec.question)
         with bind(run_id=run_id):
-            run = self.runtime.run(self.registry.capability_file(entry), ctx, run_dir)
+            run = self.runtime.run(cap_file, ctx, run_dir)
         if not run.ok:
             msg = "; ".join(f"{e.code}: {e.message}" for e in run.tool_result.errors) or run.exit_reason
             self._fail(rec, "executing", f"{entry.id} {entry.version} failed: {msg}", unchanged=True)

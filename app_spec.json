@@ -1,6 +1,6 @@
 {
   "app": "AgriMon",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "evolution_level": 1,
   "mode": "match-or-create on real imagery; composition is deferred to Evolution 2",
   "pipeline": [
@@ -14,49 +14,51 @@
     "answer + visualize"
   ],
   "contracts": {
-    "toolresult": "toolresult/1",
-    "manifest": "manifest/1",
+    "toolresult": "toolresult/2",
+    "manifest": "manifest/2",
     "evaluation": "evaluation/1",
     "catalog": "catalog/1"
   },
   "capability_template": {
-    "version": "1",
-    "entry_point": "execute(context) -> ToolResult (fixed, owned by the template)",
+    "version": "2",
+    "entry_point": "execute(context) -> ToolResult (fixed footer, owned by the template)",
     "llm_slots": [
-      "SLOT 1: compute_values(bands, params)",
-      "SLOT 2: value scale and CLASSES",
-      "SLOT 3: FINDING_RULES and NEXT_STEPS"
+      "SLOT 1: compute(bands, params) -> array | {values, zones?, metrics?}; interpret(evidence) -> {summary, findings, next_steps}; optional _helpers",
+      "SLOT 2: literals LAYER_NAME, ANALYSIS_TYPE, DESCRIPTION, REQUIRED_BANDS, VALUE_LABEL, VALUE_UNIT, AGGREGATION, COLOR_MAP, CLASSIFICATION, PARAMETERS"
     ]
   },
   "sdk": {
     "module": "agrimon.sdk",
     "functions": [
       "load_bands",
-      "to_grid",
-      "classify",
-      "find_zones",
-      "standard_metrics",
-      "render_findings",
-      "summarize",
-      "build_result"
-    ]
+      "analysis_output",
+      "to_matrix",
+      "matrix_metrics",
+      "zones_from_masks",
+      "class_summary",
+      "evidence",
+      "interpretation",
+      "build_result",
+      "fmt",
+      "now"
+    ],
+    "used_by": "the fixed template footer only; generated code may not reference sdk"
   },
   "import_allowlist": [
-    "agrimon.sdk",
-    "numpy",
+    "numpy (as np)",
     "math"
   ],
   "matching": "deterministic: 1 compatibility filter, 2 key or alias match, 3 highest version, 4 decision",
   "llm_roles": {
     "intent": "structured Intent and analysis key proposal",
-    "generation": "the three template slots",
+    "generation": "compute and interpret functions plus analytical metadata",
     "judge": "warning-only 'Answers the intent' score"
   },
   "harness": {
-    "version": "1.0",
+    "version": "2.0",
     "commit_gate": "automatic commit when all blocking checks pass",
-    "blocking": 13,
-    "warnings": 4,
+    "blocking": 18,
+    "warnings": 3,
     "categories": [
       "Contract",
       "Execution",
@@ -73,7 +75,12 @@
         "blocking": true
       },
       {
-        "name": "Completeness",
+        "name": "Matrix and grid size",
+        "category": "Contract",
+        "blocking": true
+      },
+      {
+        "name": "Asset and color map",
         "category": "Contract",
         "blocking": true
       },
@@ -88,13 +95,18 @@
         "blocking": true
       },
       {
-        "name": "Input validity",
+        "name": "Required data available",
         "category": "Data",
         "blocking": true
       },
       {
-        "name": "Value ranges",
+        "name": "Input dependence",
         "category": "Data",
+        "blocking": true
+      },
+      {
+        "name": "Data-derived matrix",
+        "category": "Analytical quality",
         "blocking": true
       },
       {
@@ -103,9 +115,14 @@
         "blocking": true
       },
       {
-        "name": "Class spread",
+        "name": "Metrics consistency",
         "category": "Analytical quality",
-        "blocking": false
+        "blocking": true
+      },
+      {
+        "name": "Zones and classes consistency",
+        "category": "Analytical quality",
+        "blocking": true
       },
       {
         "name": "Numbers traced",
@@ -123,7 +140,7 @@
         "blocking": true
       },
       {
-        "name": "Formula citation",
+        "name": "Methodology reference",
         "category": "Grounding",
         "blocking": false
       },
@@ -133,7 +150,7 @@
         "blocking": false
       },
       {
-        "name": "Readable summary",
+        "name": "Useful result",
         "category": "User value",
         "blocking": false
       },
@@ -148,7 +165,12 @@
         "blocking": true
       },
       {
-        "name": "Provenance complete",
+        "name": "Provenance chain",
+        "category": "Governance",
+        "blocking": true
+      },
+      {
+        "name": "Committed state untouched",
         "category": "Governance",
         "blocking": true
       }
@@ -159,7 +181,7 @@
     "cols": 48
   },
   "asset_catalog": "assets/catalog.json",
-  "execution": "one Python subprocess per run with a configurable timeout (fault isolation, not a security sandbox)",
+  "execution": "one Python subprocess per run with a configurable timeout, runtime guardrail hook and scrubbed environment (defence in depth, not a security sandbox)",
   "trust_zones": {
     "trusted_code": [
       "agrimon/",
@@ -190,5 +212,123 @@
     "tamper-proof registry and hash enforcement",
     "dynamic imagery ingestion and normalization",
     "georeferenced map display"
-  ]
+  ],
+  "responsibility": {
+    "platform": "execution orchestration, data access, validation, visualization, persistence, evaluation, provenance",
+    "capability": "analytical computation and the analytical metadata needed to describe and interpret it"
+  },
+  "toolresult_fields": [
+    "status",
+    "layer_name",
+    "description",
+    "analysis_type",
+    "asset_id",
+    "metrics",
+    "matrix",
+    "grid_size",
+    "color_map",
+    "zones (optional)",
+    "classification (optional)",
+    "summary",
+    "findings",
+    "next_steps",
+    "provenance",
+    "warnings",
+    "errors"
+  ],
+  "color_maps": [
+    "greens",
+    "blues",
+    "reds",
+    "purples",
+    "ylorrd"
+  ],
+  "aggregations": [
+    "mean",
+    "median",
+    "min",
+    "max",
+    "mode"
+  ],
+  "analysis_freedom": [
+    "no universal value range or min/max bounds",
+    "zones only when meaningful",
+    "classification only when requested (aggregation mode)",
+    "visualization stats derived by the platform from the matrix"
+  ],
+  "guardrails": {
+    "admission": {
+      "forbidden_calls": [
+        "__import__",
+        "breakpoint",
+        "compile",
+        "delattr",
+        "eval",
+        "exec",
+        "exit",
+        "getattr",
+        "globals",
+        "help",
+        "input",
+        "locals",
+        "memoryview",
+        "open",
+        "quit",
+        "setattr",
+        "vars"
+      ],
+      "forbidden_names": [
+        "asyncio",
+        "builtins",
+        "context",
+        "ctypes",
+        "execute",
+        "glob",
+        "http",
+        "importlib",
+        "io",
+        "multiprocessing",
+        "os",
+        "pathlib",
+        "pickle",
+        "requests",
+        "sdk",
+        "shutil",
+        "signal",
+        "socket",
+        "subprocess",
+        "sys",
+        "tempfile",
+        "threading",
+        "urllib"
+      ],
+      "forbidden_attributes": [
+        "DataSource",
+        "ctypeslib",
+        "dump",
+        "dumps",
+        "environ",
+        "fromfile",
+        "fromregex",
+        "genfromtxt",
+        "getenv",
+        "lib",
+        "load",
+        "loadtxt",
+        "memmap",
+        "popen",
+        "random",
+        "save",
+        "savetxt",
+        "savez",
+        "savez_compressed",
+        "setflags",
+        "system",
+        "tofile",
+        "any attribute starting with _"
+      ]
+    },
+    "runtime": "audit hook in the capability subprocess blocks sockets, subprocesses, file writes/deletes/renames, ctypes; violation fails the run (guardrail_violation); no API key in the environment"
+  },
+  "provenance": "persisted capability.py bytes -> SHA-256 -> Context -> ToolResult.provenance -> EvaluationReport -> commit (re-verified on copy and before each match-path run)"
 }

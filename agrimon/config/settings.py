@@ -42,7 +42,6 @@ class GridSettings(_S):
 
 
 class HarnessSettings(_S):
-    class_spread_warning: float = Field(default=0.95, gt=0, le=1)
     summary_max_chars: int = Field(default=600, ge=100)
 
 

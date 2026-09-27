@@ -1,27 +1,20 @@
 {
   "name": "RGB vegetation proxy (Excess Green)",
-  "description": "Excess Green index from the chromatic coordinates of the true-color bands: an RGB proxy for green vegetation cover, not NDVI, because the scene has no near-infrared band.",
-  "formula": "ExG = 2g - r - b, where r = R/(R+G+B), g = G/(R+G+B), b = B/(R+G+B)",
+  "description": "Excess Green from the chromatic coordinates of the true-color bands: an RGB proxy for green vegetation, not NDVI, because the asset has no near-infrared band.",
+  "analysis_type": "vegetation_index",
+  "layer_name": "Excess Green (ExG)",
+  "method": "ExG = 2g - r - b with chromatic coordinates r = R/(R+G+B), g = G/(R+G+B), b = B/(R+G+B); green-dominant where ExG > 0",
   "citation": "Woebbecke, D.M., Meyer, G.E., Von Bargen, K., Mortensen, D.A. (1995). Color indices for weed identification under various soil, residue, and lighting conditions. Transactions of the ASAE 38(1).",
-  "required_bands": ["red", "green", "blue"],
-  "value_label": "Excess Green (ExG)",
+  "required_bands": [
+    "red",
+    "green",
+    "blue"
+  ],
+  "value_label": "Excess Green",
   "value_unit": "index",
-  "value_min": -1.0,
-  "value_max": 2.0,
-  "classes": [
-    {"id": 0, "label": "not green", "color": "#a8845c", "min": -1.0, "max": 0.0},
-    {"id": 1, "label": "faint green", "color": "#d8d49a", "min": 0.0, "max": 0.05},
-    {"id": 2, "label": "moderate green", "color": "#8cc269", "min": 0.05, "max": 0.15},
-    {"id": 3, "label": "strong green", "color": "#2f7d4f", "min": 0.15, "max": 2.0}
-  ],
-  "compute_values_source": "def compute_values(bands, params):\n    \"\"\"Excess Green on chromatic coordinates; undefined where R+G+B is zero.\"\"\"\n    total = bands[\"red\"] + bands[\"green\"] + bands[\"blue\"]\n    safe = np.where(total > 0, total, np.nan)\n    r = bands[\"red\"] / safe\n    g = bands[\"green\"] / safe\n    b = bands[\"blue\"] / safe\n    return 2 * g - r - b",
-  "finding_rules": [
-    {"id": "F1", "template": "Mean Excess Green is {metric.mean_value}, ranging from {metric.min_value} to {metric.max_value}."},
-    {"id": "F2", "template": "The largest {zone.high-1.label} covers {zone.high-1.share_pct}% of valid cells, with mean ExG {zone.high-1.mean_value}."},
-    {"id": "F3", "template": "Strong-green cells make up {metric.class_3_share_pct}% of the grid and not-green cells {metric.class_0_share_pct}%."}
-  ],
-  "next_steps": [
-    {"type": "human_inspection", "description": "Inspect the largest strong-green region in the source image to confirm it is vegetation rather than green-tinted water or shadow.", "follows_from": "F2"},
-    {"type": "follow_up_analysis", "description": "When a scene with a near-infrared band is available, compute NDVI and compare it with this RGB proxy.", "follows_from": "F1"}
-  ]
+  "aggregation": "mean",
+  "color_map": "greens",
+  "classification": null,
+  "compute_source": "def compute(bands, params):\n    \"\"\"Excess Green on chromatic coordinates; undefined where R+G+B is zero.\"\"\"\n    total = bands[\"red\"] + bands[\"green\"] + bands[\"blue\"]\n    safe = np.where(total > 0, total, np.nan)\n    exg = (2 * bands[\"green\"] - bands[\"red\"] - bands[\"blue\"]) / safe\n    green = exg > 0\n    return {\n        \"values\": exg,\n        \"zones\": {\"green_dominant\": green},\n        \"metrics\": {\"green_dominant_pct\": {\"value\": 100.0 * float(np.nanmean(green)), \"unit\": \"percent\",\n                                           \"description\": \"Share of pixels where ExG is above zero\"}},\n    }",
+  "interpret_source": "def interpret(evidence):\n    m = evidence[\"metrics\"]\n    asset = evidence[\"asset\"]\n    zones = [z for z in evidence[\"zones\"] if z[\"name\"] == \"green_dominant\"]\n    summary = (f\"{asset['label']}: Excess Green, an RGB vegetation proxy, averages {m['matrix_mean']:.3f} per cell; \"\n               f\"green-dominant pixels make up {m['green_dominant_pct']:.1f}% of the image.\")\n    findings = [\n        {\"id\": \"F1\", \"statement\": f\"Cell Excess Green ranges from {m['matrix_min']:.3f} to {m['matrix_max']:.3f} \"\n                                  f\"with a mean of {m['matrix_mean']:.3f}.\",\n         \"evidence\": [\"matrix_min\", \"matrix_max\", \"matrix_mean\"]},\n        {\"id\": \"F2\", \"statement\": f\"Green-dominant pixels (Excess Green above zero) cover {m['green_dominant_pct']:.1f}% of the image.\",\n         \"evidence\": [\"green_dominant_pct\"]},\n    ]\n    steps = [{\"type\": \"follow_up_analysis\",\n              \"description\": \"When a scene with a near-infrared band is available, compute NDVI and compare it with this RGB proxy.\",\n              \"follows_from\": \"F1\"}]\n    if zones:\n        z = zones[0]\n        findings.append({\"id\": \"F3\", \"statement\": f\"The largest green-dominant region ({z['id']}) spans {z['cell_count']} cells \"\n                                                  f\"({z['share_pct']}% of valid cells) with mean Excess Green {z['mean_value']:.3f}.\",\n                         \"evidence\": [z[\"id\"]]})\n        steps.append({\"type\": \"human_inspection\",\n                      \"description\": \"Inspect the largest green-dominant region in the source image to confirm it is vegetation rather than green-tinted water or shadow.\",\n                      \"follows_from\": \"F3\"})\n    return {\"summary\": summary, \"findings\": findings, \"next_steps\": steps}"
 }

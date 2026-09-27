@@ -57,3 +57,48 @@ class FakeLLM:
 
 def fixture_json(name: str) -> dict:
     return json.loads((FIXTURES / "llm" / name).read_text())
+
+
+def evaluate_candidate(tmp_path: Path, gen: dict, scene_id: str = "eros_reservoir_farmland", *, raw_source=None,
+                       context_hash=None, after_context=None, fingerprint=None, capability_id="candidate_key"):
+    """Persists a candidate, runs it once and evaluates it with the real harness (admission not applied).
+
+    raw_source: bytes to persist instead of the assembled source (for example CRLF line endings).
+    context_hash: override the hash put in the Context (to test the provenance chain).
+    after_context: callable(cap_file) run after the Context is built (for example to tamper with the file).
+    Returns (report, run_outcome).
+    """
+    from agrimon.catalog import load_catalog
+    from agrimon.config import load_settings
+    from agrimon.contracts import GenerationOutput, Registry
+    from agrimon.evolution.candidate import file_hash, make_candidate
+    from agrimon.harness import Harness
+    from agrimon.runtime import Runtime, build_context
+
+    root = make_project(tmp_path, seed=False)
+    settings = load_settings(root, read_env=False)
+    scene = load_catalog(settings).scene(scene_id)
+    source, manifest = make_candidate(GenerationOutput.model_validate(gen), capability_id, capability_id, "generated")
+    cap = tmp_path / "cand" / "capability.py"
+    cap.parent.mkdir(parents=True, exist_ok=True)
+    cap.write_bytes(raw_source if raw_source is not None else source.encode("utf-8"))
+    ctx = build_context(settings, scene, manifest, context_hash or file_hash(cap), "staged", "req", "run",
+                        tmp_path / "run", question="test question")
+    if after_context:
+        after_context(cap)
+    runtime = Runtime(settings)
+    run = runtime.run(cap, ctx, tmp_path / "run")
+    report = Harness(settings, runtime).evaluate(
+        capability_file=cap, manifest=manifest, first_run=run, context=ctx, scene=scene, snapshot=Registry(),
+        admission_violations=[], intent=None, work_dir=tmp_path / "harness", committed_fingerprint=fingerprint)
+    return report, run
+
+
+def failed_checks(report) -> list[str]:
+    return [c.name for c in report.checks if c.blocking and not c.passed]
+
+
+def gen_fixture(name: str, **changes) -> dict:
+    g = fixture_json(name)
+    g.update(changes)
+    return g

@@ -14,7 +14,14 @@ import threading
 from pathlib import Path
 
 from agrimon.config import Settings
-from agrimon.contracts import CapabilityManifest, EvaluationReport, Registry, RegistryEntry, utcnow
+from agrimon.contracts import (
+    CONTRACT_TOOLRESULT,
+    CapabilityManifest,
+    EvaluationReport,
+    Registry,
+    RegistryEntry,
+    utcnow,
+)
 from agrimon.observability import audit, get_logger
 
 log = get_logger("registry")
@@ -84,11 +91,16 @@ class RegistryStore:
                     problems.append(f"{e.id} {e.version}: missing {name}")
             if (folder / "capability.py").exists() and _sha256(folder / "capability.py") != e.content_hash:
                 problems.append(f"{e.id} {e.version}: content hash mismatch")
-            if (folder / "manifest.json").exists():
+            if (folder / "manifest.json").exists() and e.contract == CONTRACT_TOOLRESULT:
                 m = self.read_manifest(e)
                 if (m.id, m.version, m.analysis_key) != (e.id, e.version, e.analysis_key):
                     problems.append(f"{e.id} {e.version}: manifest does not match index")
         return problems
+
+    def integrity_ok(self, entry: RegistryEntry) -> bool:
+        """True when the committed file's bytes still hash to the registered content hash."""
+        f = self.capability_file(entry)
+        return f.exists() and _sha256(f) == entry.content_hash
 
     def find_orphans(self) -> list[Path]:
         """Folders under capabilities/ that registry.json does not list (including .pending-*)."""
@@ -163,6 +175,8 @@ class RegistryStore:
             os.replace(pending, target)
             for f in target.iterdir():
                 os.chmod(f, stat.S_IREAD | stat.S_IRGRP | stat.S_IROTH)
+            if _sha256(target / "capability.py") != chash:  # the persisted copy must be byte-identical
+                raise CommitError("committed copy does not match the evaluated content hash", orphan=target)
 
             entry = RegistryEntry(
                 id=manifest.id,
@@ -179,6 +193,7 @@ class RegistryStore:
                 path=f"{manifest.id}/{manifest.version}",
                 verdict="pass",
                 overall_score=report.overall_score,
+                contract=CONTRACT_TOOLRESULT,
             )
             new = Registry(
                 registry_version=reg.registry_version + 1,

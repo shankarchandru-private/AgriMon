@@ -1,0 +1,36 @@
+{
+  "name": "Water, vegetation and bright-surface classes (RGB rules)",
+  "description": "Rule-based classification of each pixel into water-like, green vegetation-like and other surfaces from true-color bands.",
+  "analysis_type": "classification",
+  "layer_name": "Surface classes",
+  "method": "class 0 water-like: blue is the largest band and brightness < 0.35; class 1 vegetation-like: ExG (2G-R-B on chromatic coordinates) > 0.05; class 2 other",
+  "citation": "",
+  "required_bands": [
+    "red",
+    "green",
+    "blue"
+  ],
+  "value_label": "Surface class",
+  "value_unit": "class id",
+  "aggregation": "mode",
+  "color_map": "blues",
+  "classification": [
+    {
+      "id": 0,
+      "label": "water-like",
+      "description": "blue is the largest band and brightness < 0.35"
+    },
+    {
+      "id": 1,
+      "label": "vegetation-like",
+      "description": "Excess Green on chromatic coordinates > 0.05"
+    },
+    {
+      "id": 2,
+      "label": "other",
+      "description": "everything else"
+    }
+  ],
+  "compute_source": "def compute(bands, params):\n    r, g, b = bands[\"red\"], bands[\"green\"], bands[\"blue\"]\n    total = r + g + b\n    safe = np.where(total > 0, total, np.nan)\n    exg = (2 * g - r - b) / safe\n    bright = (r + g + b) / 3.0\n    water = (b >= r) & (b >= g) & (bright < 0.35)\n    veg = (exg > 0.05) & ~water\n    return np.where(water, 0.0, np.where(veg, 1.0, 2.0))",
+  "interpret_source": "def interpret(evidence):\n    asset = evidence[\"asset\"]\n    classes = {c[\"id\"]: c for c in evidence[\"classes\"]}\n    findings, steps = [], []\n    for i, cid in enumerate(sorted(classes), start=1):\n        c = classes[cid]\n        findings.append({\"id\": f\"F{i}\", \"statement\": f\"{c['label']} cells cover {c['share_pct']}% of the grid ({c['cell_count']} cells).\",\n                         \"evidence\": [f\"class:{cid}\"]})\n    summary = f\"{asset['label']}: each cell is labelled with its most frequent surface class.\"\n    steps.append({\"type\": \"human_inspection\",\n                  \"description\": \"Check a sample of cells from each class against the source image to judge the rule-based labels.\",\n                  \"follows_from\": findings[0][\"id\"]})\n    return {\"summary\": summary, \"findings\": findings, \"next_steps\": steps}"
+}

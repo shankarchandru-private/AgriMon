@@ -19,7 +19,7 @@ sys.path.insert(0, str(ROOT))
 from agrimon.catalog import load_catalog  # noqa: E402
 from agrimon.config import Settings, load_settings  # noqa: E402
 from agrimon.evolution.admission import admit  # noqa: E402
-from agrimon.evolution.candidate import make_candidate  # noqa: E402
+from agrimon.evolution.candidate import make_candidate, persist_source  # noqa: E402
 from agrimon.evolution.templates.seed_rgb_overview import SEED, SEED_ALIASES, SEED_ANALYSIS_KEY, SEED_ID  # noqa: E402
 from agrimon.harness import Harness  # noqa: E402
 from agrimon.observability import setup_logging  # noqa: E402
@@ -46,18 +46,19 @@ def install_seed(settings: Settings) -> None:
     stage = settings.staging_dir / "seed"
     cand = stage / "candidate"
     cand.mkdir(parents=True, exist_ok=True)
-    (cand / "capability.py").write_text(source, encoding="utf-8")
+    cap_file = cand / "capability.py"
+    digest = persist_source(cap_file, source)  # provenance root: persisted bytes
     snapshot = registry.snapshot()
-    violations = admit(source, manifest, scene, snapshot, settings.evolution.max_source_bytes)
+    violations = admit(cap_file.read_bytes().decode("utf-8"), manifest, scene, snapshot, settings.evolution.max_source_bytes)
     if violations:
         raise SystemExit("seed failed admission: " + "; ".join(violations))
-    from agrimon.evolution.candidate import content_hash
-
-    ctx = build_context(settings, scene, manifest, content_hash(source), "staged", "seed", "seed-run", stage / "run")
+    ctx = build_context(settings, scene, manifest, digest, "staged", "seed", "seed-run", stage / "run",
+                        question="Give me a brightness overview")
     run = runtime.run(cand / "capability.py", ctx, stage / "run")
     report = harness.evaluate(
         capability_file=cand / "capability.py", manifest=manifest, first_run=run, context=ctx, scene=scene,
         snapshot=snapshot, admission_violations=violations, intent=None, work_dir=stage / "harness",
+        committed_fingerprint=registry.fingerprint,
     )
     for c in report.checks:
         print(f"  [{'PASS' if c.passed else ('FAIL' if c.blocking else 'WARN')}] {c.category:18} {c.name}: {c.observed}")
