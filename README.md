@@ -1,4 +1,4 @@
-# AgriMon · Evolution 1
+# AgriMon · Evolution Version 1
 
 A small, complete prototype of a **self-evolving geospatial analytics system**. Ask an open-ended
 question about a true-color image. If a trusted capability already answers it, AgriMon runs that
