@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AgriMon · Evaluation harness</title>
+  <link rel="stylesheet" href="css/app.css">
+  <link rel="stylesheet" href="css/harness.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="logo" aria-hidden="true"></span>AgriMon <span class="tag">Evaluation harness</span></div>
+    <div class="health"><a href="/">← Back to the app</a></div>
+  </header>
+  <main class="harness">
+    <section class="panel">
+      <h2>Capabilities and attempts</h2>
+      <p class="small muted">Every committed capability passed all 13 blocking checks. Quarantined candidates failed a check or an earlier stage and were never made discoverable. Category scores are the mean of that category's check scores.</p>
+      <div class="table-scroll"><table class="matrix" id="matrix"></table></div>
+    </section>
+    <section class="panel" id="detail">
+      <p class="muted">Select a row to see all 17 checks.</p>
+    </section>
+  </main>
+  <script type="module" src="js/harness.js"></script>
+</body>
+</html>

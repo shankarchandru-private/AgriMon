@@ -1,0 +1,7 @@
+# AgriMon Evolution 1 runtime dependencies (tested with Python 3.11 and 3.12)
+fastapi==0.141.1
+uvicorn==0.46.0
+pydantic==2.13.3
+numpy==2.4.4
+rasterio==1.4.4
+openai==3.19.2

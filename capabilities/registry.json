@@ -1,0 +1,29 @@
+{
+  "registry_version": 1,
+  "updated_at": "2026-09-27T03:53:32+00:00",
+  "capabilities": [
+    {
+      "id": "rgb_overview",
+      "version": "1.0.0",
+      "analysis_key": "brightness_overview",
+      "aliases": [
+        "true_color_overview",
+        "rgb_brightness_overview"
+      ],
+      "name": "True-color brightness overview",
+      "description": "Per-pixel brightness of the true-color image as a luminance-weighted mean of red, green and blue, summarized on a grid with its brightest and darkest regions.",
+      "required_bands": [
+        "red",
+        "green",
+        "blue"
+      ],
+      "origin": "seed",
+      "committed_at": "2026-09-27T03:53:32+00:00",
+      "source_request_id": null,
+      "content_hash": "3375f0747a6c2014c97afec2590818e33ab145c70fbaa89a115b78e8db3888f3",
+      "path": "rgb_overview/1.0.0",
+      "verdict": "pass",
+      "overall_score": 0.971
+    }
+  ]
+}

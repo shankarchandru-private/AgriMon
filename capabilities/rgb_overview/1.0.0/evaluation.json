@@ -1,0 +1,225 @@
+{
+  "report_version": "evaluation/1",
+  "report_id": "363d676e599d",
+  "subject": "candidate",
+  "capability_id": "rgb_overview",
+  "capability_version": "1.0.0",
+  "content_hash": "3375f0747a6c2014c97afec2590818e33ab145c70fbaa89a115b78e8db3888f3",
+  "harness_version": "1.0",
+  "config_version": "2475f79b137e",
+  "checks": [
+    {
+      "name": "Schema conformance",
+      "category": "Contract",
+      "blocking": true,
+      "passed": true,
+      "score": 1.0,
+      "observed": "valid toolresult/1, status=success",
+      "expected": "valid toolresult/1 with status=success",
+      "evidence": ""
+    },
+    {
+      "name": "Completeness",
+      "category": "Contract",
+      "blocking": true,
+      "passed": true,
+      "score": 1.0,
+      "observed": "all fields present; color map covers the grid",
+      "expected": "metrics, grid, color map, zones, summary, findings",
+      "evidence": ""
+    },
+    {
+      "name": "Clean run",
+      "category": "Execution",
+      "blocking": true,
+      "passed": true,
+      "score": 1.0,
+      "observed": "exit=ok, 0.45s",
+      "expected": "exit=ok within 60s",
+      "evidence": ""
+    },
+    {
+      "name": "Reproducibility",
+      "category": "Execution",
+      "blocking": true,
+      "passed": true,
+      "score": 1.0,
+      "observed": "classes equal=True, values equal=True, metrics equal=True",
+      "expected": "identical grid and metrics on a second run",
+      "evidence": ""
+    },
+    {
+      "name": "Input validity",
+      "category": "Data",
+      "blocking": true,
+      "passed": true,
+      "score": 1.0,
+      "observed": "bands ['red', 'green', 'blue'] present; grid and nodata consistent",
+      "expected": "required bands present, declared grid size, nodata accounted for",
+      "evidence": ""
+    },
+    {
+      "name": "Value ranges",
+      "category": "Data",
+      "blocking": true,
+      "passed": true,
+      "score": 1.0,
+      "observed": "all values within [0, 1]; class shares sum to 100.00%",
+      "expected": "values within the declared scale [0, 1]; shares sum to 100%",
+      "evidence": ""
+    },
+    {
+      "name": "Probe behaviour",
+      "category": "Analytical quality",
+      "blocking": true,
+      "passed": true,
+      "score": 1.0,
+      "observed": "constant: 1 class(es), 0 nodata cells; masked: 576/576 masked cells are nodata, 1728/1728 unmasked cells have data",
+      "expected": "constant image -> one class; masked quadrant -> nodata cells only there",
+      "evidence": ""
+    },
+    {
+      "name": "Class spread",
+      "category": "Analytical quality",
+      "blocking": false,
+      "passed": true,
+      "score": 1.0,
+      "observed": "largest class covers 86.02% of cells",
+      "expected": "no class above 95%",
+      "evidence": ""
+    },
+    {
+      "name": "Numbers traced",
+      "category": "Grounding",
+      "blocking": true,
+      "passed": true,
+      "score": 1.0,
+      "observed": "every number appears in metrics or zones",
+      "expected": "numbers in summary and findings come from metrics or zones",
+      "evidence": ""
+    },
+    {
+      "name": "Evidence references",
+      "category": "Grounding",
+      "blocking": true,
+      "passed": true,
+      "score": 1.0,
+      "observed": "3 findings, all cite metrics or zones",
+      "expected": "every finding cites at least one existing metric or zone",
+      "evidence": ""
+    },
+    {
+      "name": "No unsupported prescriptions",
+      "category": "Grounding",
+      "blocking": true,
+      "passed": true,
+      "score": 1.0,
+      "observed": "3 next steps, all follow-up analysis or human inspection",
+      "expected": "next steps are follow-up analysis or human inspection, never prescriptions",
+      "evidence": ""
+    },
+    {
+      "name": "Formula citation",
+      "category": "Grounding",
+      "blocking": false,
+      "passed": true,
+      "score": 1.0,
+      "observed": "formula='brightness = 0.2126 R + 0.7152 G + 0.0722 B (bands scaled to 0-1)'; citation='ITU-R Recommendation BT.709-6, luma coefficients (2015)'",
+      "expected": "a formula and a published source",
+      "evidence": ""
+    },
+    {
+      "name": "Answers the intent",
+      "category": "User value",
+      "blocking": false,
+      "passed": false,
+      "score": 0.5,
+      "observed": "not judged: no LLM judge available",
+      "expected": "LLM-judged score of at least 0.6",
+      "evidence": ""
+    },
+    {
+      "name": "Readable summary",
+      "category": "User value",
+      "blocking": false,
+      "passed": true,
+      "score": 1.0,
+      "observed": "242 chars; names scene=True; names date=True",
+      "expected": "at most 600 chars, naming the scene and its date",
+      "evidence": ""
+    },
+    {
+      "name": "Admission passed",
+      "category": "Governance",
+      "blocking": true,
+      "passed": true,
+      "score": 1.0,
+      "observed": "all 7 admission rules passed",
+      "expected": "no admission violations",
+      "evidence": ""
+    },
+    {
+      "name": "Not a duplicate",
+      "category": "Governance",
+      "blocking": true,
+      "passed": true,
+      "score": 1.0,
+      "observed": "'brightness_overview' is new",
+      "expected": "no committed capability with the same id or analysis key",
+      "evidence": ""
+    },
+    {
+      "name": "Provenance complete",
+      "category": "Governance",
+      "blocking": true,
+      "passed": true,
+      "score": 1.0,
+      "observed": "rgb_overview 1.0.0, hash 3375f0747a6c, scene eros_forest_valley",
+      "expected": "capability, version, content hash, scene and parameters recorded",
+      "evidence": ""
+    }
+  ],
+  "categories": [
+    {
+      "category": "Contract",
+      "score": 1.0,
+      "passed": true
+    },
+    {
+      "category": "Execution",
+      "score": 1.0,
+      "passed": true
+    },
+    {
+      "category": "Data",
+      "score": 1.0,
+      "passed": true
+    },
+    {
+      "category": "Analytical quality",
+      "score": 1.0,
+      "passed": true
+    },
+    {
+      "category": "Grounding",
+      "score": 1.0,
+      "passed": true
+    },
+    {
+      "category": "User value",
+      "score": 0.75,
+      "passed": true
+    },
+    {
+      "category": "Governance",
+      "score": 1.0,
+      "passed": true
+    }
+  ],
+  "blocking_passed": 13,
+  "blocking_total": 13,
+  "warnings_raised": 1,
+  "overall_score": 0.971,
+  "verdict": "pass",
+  "created_at": "2026-09-27T03:53:32+00:00"
+}

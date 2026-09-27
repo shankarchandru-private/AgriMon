@@ -1,0 +1,16 @@
+.harness { display: grid; gap: 16px; padding: 16px; max-width: 1400px; margin: 0 auto; }
+.table-scroll { overflow-x: auto; }
+table.matrix, table.checks { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+table.matrix th, table.checks th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 600; padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+table.matrix td, table.checks td { padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+table.matrix tr.row { cursor: pointer; }
+table.matrix tr.row:hover, table.matrix tr.row.on { background: var(--soft); }
+td.num { text-align: right; font-variant-numeric: tabular-nums; }
+td.score { text-align: center; font-variant-numeric: tabular-nums; }
+td.score.full { color: var(--accent); } td.score.part { color: var(--warn); } td.score.fail { color: var(--bad); font-weight: 700; }
+tr.cat td { background: var(--soft); font-weight: 700; font-size: 12px; }
+.res { font-weight: 700; font-size: 11px; padding: 1px 7px; border-radius: 99px; }
+.res.pass { background: var(--accent-soft); color: var(--accent); }
+.res.fail { background: var(--bad-soft); color: var(--bad); }
+.res.warn { background: var(--warn-soft); color: var(--warn); }
+.obs { color: var(--muted); max-width: 520px; overflow-wrap: anywhere; }

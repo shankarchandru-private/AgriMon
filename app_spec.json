@@ -1,0 +1,194 @@
+{
+  "app": "AgriMon",
+  "version": "0.1.0",
+  "evolution_level": 1,
+  "mode": "match-or-create on real imagery; composition is deferred to Evolution 2",
+  "pipeline": [
+    "question",
+    "intent",
+    "match",
+    "execute existing | generate new",
+    "validate",
+    "evaluate",
+    "commit | quarantine",
+    "answer + visualize"
+  ],
+  "contracts": {
+    "toolresult": "toolresult/1",
+    "manifest": "manifest/1",
+    "evaluation": "evaluation/1",
+    "catalog": "catalog/1"
+  },
+  "capability_template": {
+    "version": "1",
+    "entry_point": "execute(context) -> ToolResult (fixed, owned by the template)",
+    "llm_slots": [
+      "SLOT 1: compute_values(bands, params)",
+      "SLOT 2: value scale and CLASSES",
+      "SLOT 3: FINDING_RULES and NEXT_STEPS"
+    ]
+  },
+  "sdk": {
+    "module": "agrimon.sdk",
+    "functions": [
+      "load_bands",
+      "to_grid",
+      "classify",
+      "find_zones",
+      "standard_metrics",
+      "render_findings",
+      "summarize",
+      "build_result"
+    ]
+  },
+  "import_allowlist": [
+    "agrimon.sdk",
+    "numpy",
+    "math"
+  ],
+  "matching": "deterministic: 1 compatibility filter, 2 key or alias match, 3 highest version, 4 decision",
+  "llm_roles": {
+    "intent": "structured Intent and analysis key proposal",
+    "generation": "the three template slots",
+    "judge": "warning-only 'Answers the intent' score"
+  },
+  "harness": {
+    "version": "1.0",
+    "commit_gate": "automatic commit when all blocking checks pass",
+    "blocking": 13,
+    "warnings": 4,
+    "categories": [
+      "Contract",
+      "Execution",
+      "Data",
+      "Analytical quality",
+      "Grounding",
+      "User value",
+      "Governance"
+    ],
+    "checks": [
+      {
+        "name": "Schema conformance",
+        "category": "Contract",
+        "blocking": true
+      },
+      {
+        "name": "Completeness",
+        "category": "Contract",
+        "blocking": true
+      },
+      {
+        "name": "Clean run",
+        "category": "Execution",
+        "blocking": true
+      },
+      {
+        "name": "Reproducibility",
+        "category": "Execution",
+        "blocking": true
+      },
+      {
+        "name": "Input validity",
+        "category": "Data",
+        "blocking": true
+      },
+      {
+        "name": "Value ranges",
+        "category": "Data",
+        "blocking": true
+      },
+      {
+        "name": "Probe behaviour",
+        "category": "Analytical quality",
+        "blocking": true
+      },
+      {
+        "name": "Class spread",
+        "category": "Analytical quality",
+        "blocking": false
+      },
+      {
+        "name": "Numbers traced",
+        "category": "Grounding",
+        "blocking": true
+      },
+      {
+        "name": "Evidence references",
+        "category": "Grounding",
+        "blocking": true
+      },
+      {
+        "name": "No unsupported prescriptions",
+        "category": "Grounding",
+        "blocking": true
+      },
+      {
+        "name": "Formula citation",
+        "category": "Grounding",
+        "blocking": false
+      },
+      {
+        "name": "Answers the intent",
+        "category": "User value",
+        "blocking": false
+      },
+      {
+        "name": "Readable summary",
+        "category": "User value",
+        "blocking": false
+      },
+      {
+        "name": "Admission passed",
+        "category": "Governance",
+        "blocking": true
+      },
+      {
+        "name": "Not a duplicate",
+        "category": "Governance",
+        "blocking": true
+      },
+      {
+        "name": "Provenance complete",
+        "category": "Governance",
+        "blocking": true
+      }
+    ]
+  },
+  "grid_defaults": {
+    "rows": 48,
+    "cols": 48
+  },
+  "asset_catalog": "assets/catalog.json",
+  "execution": "one Python subprocess per run with a configurable timeout (fault isolation, not a security sandbox)",
+  "trust_zones": {
+    "trusted_code": [
+      "agrimon/",
+      "web/",
+      "scripts/"
+    ],
+    "trusted_data": [
+      "assets/"
+    ],
+    "committed_capabilities": [
+      "capabilities/"
+    ],
+    "untrusted": [
+      "workspace/"
+    ],
+    "runtime_records": [
+      "var/"
+    ]
+  },
+  "deferred_to_evolution_2": [
+    "composition and pinned dependencies",
+    "Provisional to Trusted promotion",
+    "revocation cascades",
+    "qualitative review as a blocking gate"
+  ],
+  "deferred_to_production": [
+    "security sandboxing (containers, network blocking, memory limits)",
+    "tamper-proof registry and hash enforcement",
+    "dynamic imagery ingestion and normalization",
+    "georeferenced map display"
+  ]
+}

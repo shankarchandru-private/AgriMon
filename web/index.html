@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AgriMon · Evolution 1</title>
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="logo" aria-hidden="true"></span>AgriMon <span class="tag">Evolution 1</span></div>
+    <div class="health" id="health">Checking…</div>
+  </header>
+
+  <main class="layout">
+    <!-- Panel 1: data, capabilities, harness -->
+    <aside class="panel left">
+      <section>
+        <h2>Data assets</h2>
+        <div id="scenes" class="scenes"></div>
+      </section>
+      <section>
+        <div class="section-head">
+          <h2>Capabilities</h2>
+          <span class="muted small" id="registry-version"></span>
+        </div>
+        <ul id="capabilities" class="caps"></ul>
+      </section>
+      <section>
+        <a class="harness-link" href="harness.html" target="_blank" rel="noopener">
+          Evaluation harness <span aria-hidden="true">↗</span>
+          <span class="muted small">17 checks per capability and attempt</span>
+        </a>
+      </section>
+    </aside>
+
+    <!-- Panel 2: question, pipeline, grid -->
+    <section class="panel middle">
+      <form id="ask" class="ask" autocomplete="off">
+        <label for="question" class="sr-only">Analytical question</label>
+        <input id="question" name="question" placeholder="Ask an analytical question about the selected scene…" required minlength="3">
+        <button type="submit" id="ask-btn">Ask</button>
+      </form>
+      <div class="examples">
+        <span class="muted small">Try:</span>
+        <button class="chip" data-q="Give me a brightness overview of this image">Brightness overview</button>
+        <button class="chip" data-q="Where does vegetation appear?">Where does vegetation appear?</button>
+      </div>
+
+      <ol class="stepper" id="stepper"></ol>
+      <p class="status" id="status" aria-live="polite">Select a scene and ask a question.</p>
+
+      <div class="viz">
+        <div class="viz-head">
+          <h2 id="viz-title">Result grid</h2>
+          <div class="toggle" role="tablist">
+            <button role="tab" class="on" data-view="grid">Grid</button>
+            <button role="tab" data-view="image">Source image</button>
+          </div>
+        </div>
+        <div class="canvas-wrap" id="canvas-wrap">
+          <canvas id="grid-canvas" width="480" height="480" aria-label="Analysis grid"></canvas>
+          <img id="source-img" alt="Source scene" hidden>
+          <div class="tooltip" id="tooltip" hidden></div>
+          <div class="empty" id="viz-empty">The analysis grid appears here.</div>
+        </div>
+        <div class="legend" id="legend"></div>
+      </div>
+    </section>
+
+    <!-- Panel 3: analysis and capability card -->
+    <aside class="panel right">
+      <div class="tabs" role="tablist">
+        <button role="tab" class="on" data-tab="analysis">Analysis</button>
+        <button role="tab" data-tab="capability">Capability</button>
+      </div>
+      <div id="tab-analysis" class="tab-body">
+        <p class="muted">Findings, metrics, next steps and evaluation appear here after a question is answered.</p>
+      </div>
+      <div id="tab-capability" class="tab-body" hidden>
+        <p class="muted">Click a capability on the left to see what it does and how it was evaluated.</p>
+      </div>
+    </aside>
+  </main>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

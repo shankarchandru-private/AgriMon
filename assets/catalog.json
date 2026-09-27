@@ -1,0 +1,67 @@
+{
+  "catalog_version": "catalog/1",
+  "scenes": [
+    {
+      "id": "eros_forest_valley",
+      "label": "Forested valley with clearings",
+      "file": "scenes/eros_forest_valley.jpg",
+      "sensor": "True-color RGB image (JPEG)",
+      "source": "USGS EROS export",
+      "acquisition_date": null,
+      "crs": null,
+      "width": 394,
+      "height": 512,
+      "resolution_m": null,
+      "dtype": "uint8",
+      "nodata": null,
+      "bands": [
+        {
+          "name": "red",
+          "index": 1,
+          "scale": 0.00392156862745098
+        },
+        {
+          "name": "green",
+          "index": 2,
+          "scale": 0.00392156862745098
+        },
+        {
+          "name": "blue",
+          "index": 3,
+          "scale": 0.00392156862745098
+        }
+      ]
+    },
+    {
+      "id": "eros_reservoir_farmland",
+      "label": "Reservoir, river and farmland",
+      "file": "scenes/eros_reservoir_farmland.jpg",
+      "sensor": "True-color RGB image (JPEG)",
+      "source": "USGS EROS export",
+      "acquisition_date": null,
+      "crs": null,
+      "width": 381,
+      "height": 512,
+      "resolution_m": null,
+      "dtype": "uint8",
+      "nodata": null,
+      "bands": [
+        {
+          "name": "red",
+          "index": 1,
+          "scale": 0.00392156862745098
+        },
+        {
+          "name": "green",
+          "index": 2,
+          "scale": 0.00392156862745098
+        },
+        {
+          "name": "blue",
+          "index": 3,
+          "scale": 0.00392156862745098
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "analysis_key": "brightness_overview",
+  "is_new_key": false,
+  "description": "Per-pixel brightness of the true-color image, summarized on a grid with brightest and darkest regions.",
+  "required_bands": ["red", "green", "blue"],
+  "assumptions": []
+}

@@ -1,0 +1,38 @@
+# AgriMon Evolution 1 - how the app runs locally.
+# Secrets never go here: the OpenAI key lives in .env (see .env.example).
+
+[server]
+host = "127.0.0.1"
+port = 8000
+
+[llm]
+intent_model = "gpt-4o-mini"      # structured intent resolution
+generation_model = "gpt-4o-mini"  # fills the three capability template slots
+temperature = 0.0
+request_timeout_seconds = 60
+
+[runtime]
+timeout_seconds = 60              # each capability run is killed after this
+
+[evolution]
+max_retries = 2                   # regenerations after a failed candidate
+max_source_bytes = 20000
+
+[grid]
+rows = 48
+cols = 48
+
+[harness]
+class_spread_warning = 0.95
+summary_max_chars = 600
+
+[requests]
+max_concurrent_evolutions = 1     # serializes commits; match-path requests run alongside
+worker_threads = 4
+
+[paths]
+assets = "assets"
+capabilities = "capabilities"
+workspace = "workspace"
+var = "var"
+web = "web"

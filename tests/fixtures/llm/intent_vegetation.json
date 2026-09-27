@@ -1,0 +1,7 @@
+{
+  "analysis_key": "vegetation_proxy_rgb",
+  "is_new_key": true,
+  "description": "Per-pixel greenness from the true-color bands as an RGB vegetation proxy, summarized on a grid.",
+  "required_bands": ["red", "green", "blue"],
+  "assumptions": ["The scene has no near-infrared band, so an RGB vegetation proxy (Excess Green) is used instead of NDVI."]
+}
