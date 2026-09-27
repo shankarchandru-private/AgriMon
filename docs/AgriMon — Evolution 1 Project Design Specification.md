@@ -337,6 +337,7 @@ These are known gaps, accepted for the prototype and recorded so the production 
 - **Tamper-proof registry.** The prototype marks committed files read-only and re-checks the content hash at commit and before every run, refusing a mismatch. Production needs enforced immutability such as signed artifacts on protected storage.
 - **Dynamic imagery.** The prototype reuses one or two static clips. Production needs ingestion, cloud masking and normalization across scenes and dates.
 - **Georeferenced display.** The prototype shows a grid. Production likely needs a map view with the grid overlaid on its true location.
+- **Scalability.** The prototype does not address scalability of services, but conceptually isolates each area well and creates a roadmap to scale the system independently (eg. Evolution Engine Isolated, Evaluation harness running in sub-process, Capabilities can be scaled independently to scale them once created to support existing questions easily and securely, Data Access patterns can be streamlined by managing Cloud optimzed asset storage etc..). 
 
 ## Repository design
 
