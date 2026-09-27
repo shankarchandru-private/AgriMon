@@ -48,7 +48,7 @@ python -m agrimon
 
 Open **http://127.0.0.1:8000**.
 
-## Upgrading from the first build
+## Resetting the App after adding multiple user generated capabilities.
 
 The capability contract changed (ToolResult v2: a free-form analytical matrix instead of fixed
 classes and value ranges). Capabilities committed by the earlier build are kept but no longer matched.
